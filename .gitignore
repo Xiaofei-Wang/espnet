@@ -1,8 +1,9 @@
-*~
+B*~
 *.pyc
 \#*\#
 .\#*
 *DS_Store
+slurm-*.out
 
 doc/_build
 
@@ -13,8 +14,10 @@ egs/*/*/downloads
 egs/*/*/dump
 egs/*/*/exp
 egs/*/*/fbank
+egs/*/*/mfcc
 egs/*/*/stft
 egs/*/*/enhan
+egs/*/*/wav*
 
 # tools related
 src/utils/kaldi_io_py.py
@@ -26,6 +29,10 @@ tools/nkf/
 tools/venv/
 tools/warp-ctc/
 tools/chainer_ctc/
-tools/subword-nmt/
+tools/sentencepiece/
+tools/nkf*
+tools/chainer_ctc*
+tools/warp-ctc*
+tools/sentencepiece/*
 
 .pytest_cache

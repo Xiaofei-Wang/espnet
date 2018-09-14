@@ -13,6 +13,8 @@ import sys
 
 import numpy as np
 
+def str2bool(v):
+  return v.lower() in ("yes", "true", "t", "1")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -31,10 +33,12 @@ def main():
     parser.add_argument('--verbose', '-V', default=1, type=int,
                         help='Verbose option')
     # task related
-    parser.add_argument('--recog-feat', type=str, required=True,
+    parser.add_argument('--recog-feat', type=str,
                         help='Filename of recognition feature data (Kaldi scp)')
-    parser.add_argument('--recog-label', type=str, required=True,
+    parser.add_argument('--recog-label', type=str,
                         help='Filename of recognition label data (json)')
+    parser.add_argument('--recog-json', type=str,
+                        help='Filename of recognition data (json)')
     parser.add_argument('--result-label', type=str, required=True,
                         help='Filename of result label data (json)')
     # model (parameter) related
@@ -60,8 +64,17 @@ def main():
     # rnnlm related
     parser.add_argument('--rnnlm', type=str, default=None,
                         help='RNNLM model file to read')
+    parser.add_argument('--word-rnnlm', type=str, default=None,
+                        help='Word RNNLM model file to read')
+    parser.add_argument('--word-dict', type=str, default=None,
+                        help='Word list to read')
     parser.add_argument('--lm-weight', default=0.1, type=float,
                         help='RNNLM weight.')
+    # multiencoder multibands
+    # decode
+    # parser.add_argument('--add-gauss-noise', default=False, type=str2bool, help='Add Gaussian Noise (mean=0, var=1) to first few streams. for decoding only')
+    parser.add_argument('--l2-weight', default=None, type=float, help='fix l2 att weight for first encoder, then the second will be 1-eval-l2-weight, default:None')
+
     args = parser.parse_args()
 
     # logging info

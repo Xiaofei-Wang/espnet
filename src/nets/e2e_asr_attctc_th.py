@@ -26,6 +26,9 @@ from ctc_prefix_score import CTCPrefixScore
 from e2e_asr_common import end_detect
 from e2e_asr_common import label_smoothing_dist
 
+
+torch_is_old = torch.__version__.startswith("0.3.")
+
 CTC_LOSS_THRESHOLD = 10000
 CTC_SCORING_RATIO = 1.5
 MAX_DECODER_OUTPUT = 5
@@ -40,9 +43,14 @@ def to_cuda(m, x):
 
 
 def lecun_normal_init_parameters(module):
-    for p in module.parameters():
+    # for p in module.parameters():
+    for name, p in module.named_parameters():
         data = p.data
-        if data.dim() == 1:
+
+        if 'batchnorm' in name and 'weight' in name:
+            data.uniform_()
+
+        elif data.dim() == 1:
             # bias
             data.zero_()
         elif data.dim() == 2:
@@ -66,6 +74,49 @@ def _get_vgg2l_odim(idim, in_channel=3, out_channel=128):
     idim = idim / in_channel
     idim = np.ceil(np.array(idim, dtype=np.float32) / 2)  # 1st max pooling
     idim = np.ceil(np.array(idim, dtype=np.float32) / 2)  # 2nd max pooling
+    return int(idim) * out_channel  # numer of channels
+
+
+def _get_maxpooling2_odim(idim, in_channel=3, out_channel=128, ceil_mode=False, mode='regular', dilation=1):
+
+    idim = idim / in_channel
+    fn = np.ceil if ceil_mode else np.floor
+    if mode == 'regular':
+
+        s, p, k = [1, dilation, 3]; idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k-1)-1) / s) + 1) # in cnn
+        s, p, k = [1, dilation, 3];
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k - 1) - 1) / s) + 1)  # in cnn
+        s, p, k = [2, 0, 2]; idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - k) / s) + 1) # in maxpool
+        s, p, k = [1, dilation, 3]; idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k-1)-1) / s) + 1) # in cnn
+        s, p, k = [1, dilation, 3];
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k - 1) - 1) / s) + 1)  # in cnn
+        s, p, k = [2, 0, 2]; idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - k) / s) + 1) # in maxpool
+
+    if mode == 'vgg8':
+
+        s, p, k = [1, dilation, 3]; idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k-1)-1) / s) + 1) # in cnn
+        s, p, k = [1, dilation, 3];
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k - 1) - 1) / s) + 1)  # in cnn
+        s, p, k = [2, 0, 2]; idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - k) / s) + 1) # in maxpool
+        s, p, k = [1, dilation, 3]; idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k-1)-1) / s) + 1) # in cnn
+        s, p, k = [1, dilation, 3];
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k - 1) - 1) / s) + 1)  # in cnn
+        s, p, k = [2, 0, 2]; idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - k) / s) + 1) # in maxpool
+        s, p, k = [1, dilation, 3];
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k - 1) - 1) / s) + 1)  # in cnn
+        s, p, k = [1, dilation, 3];
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k - 1) - 1) / s) + 1)  # in cnn
+        s, p, k = [1, dilation, 3];
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k - 1) - 1) / s) + 1)  # in cnn
+        s, p, k = [1, dilation, 3];
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - dilation * (k - 1) - 1) / s) + 1)  # in cnn
+
+    elif mode =='resnetorig':
+        s, p, k = [2, 3, 7]
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - k) / s) + 1)
+        s, p, k = [2, 1, 3]
+        idim = fn(((np.array(idim, dtype=np.float32) + 2 * p - k) / s) + 1)
+
     return int(idim) * out_channel  # numer of channels
 
 
@@ -118,35 +169,46 @@ class Loss(torch.nn.Module):
         alpha = self.mtlalpha
         if alpha == 0:
             self.loss = loss_att
-            loss_att_data = loss_att.data[0]
+            loss_att_data = loss_att.data[0] if torch_is_old else float(loss_att)
             loss_ctc_data = None
         elif alpha == 1:
             self.loss = loss_ctc
             loss_att_data = None
-            loss_ctc_data = loss_ctc.data[0]
+            loss_ctc_data = loss_ctc.data[0] if torch_is_old else float(loss_ctc)
         else:
             self.loss = alpha * loss_ctc + (1 - alpha) * loss_att
-            loss_att_data = loss_att.data[0]
-            loss_ctc_data = loss_ctc.data[0]
+            loss_att_data = loss_att.data[0] if torch_is_old else float(loss_att)
+            loss_ctc_data = loss_ctc.data[0] if torch_is_old else float(loss_ctc)
 
-        if self.loss.data[0] < CTC_LOSS_THRESHOLD and not math.isnan(self.loss.data[0]):
-            self.reporter.report(loss_ctc_data, loss_att_data, acc, self.loss.data[0])
+        loss_data = self.loss.data[0] if torch_is_old else float(self.loss)
+        if loss_data < CTC_LOSS_THRESHOLD and not math.isnan(loss_data):
+            self.reporter.report(loss_ctc_data, loss_att_data, acc, loss_data)
         else:
             logging.warning('loss (=%f) is not correct', self.loss.data)
 
         return self.loss
 
 
-def pad_list(xs, pad_value=float("nan")):
-    assert isinstance(xs[0], Variable)
+def pad_list(xs, pad_value):
     n_batch = len(xs)
     max_len = max(x.size(0) for x in xs)
-    pad = Variable(
-        xs[0].data.new(
-            n_batch, max_len, * xs[0].size()[1:]).zero_() + pad_value,
-        volatile=xs[0].volatile)
+    if torch_is_old:
+        if isinstance(xs[0], Variable):
+            new = xs[0].data.new
+            v = xs[0].volatile
+        else:
+            new = xs[0].new
+            v = False
+        pad = Variable(
+            new(n_batch, max_len, * xs[0].size()[1:]).zero_() + pad_value,
+            volatile=v)
+    else:
+        pad = xs[0].data.new(
+            n_batch, max_len, * xs[0].size()[1:]).zero_() + pad_value
+
     for i in range(n_batch):
         pad[i, :xs[i].size(0)] = xs[i]
+
     return pad
 
 
@@ -164,6 +226,8 @@ class E2E(torch.nn.Module):
         self.char_list = args.char_list
         self.outdir = args.outdir
         self.mtlalpha = args.mtlalpha
+        self.num_enc = args.num_enc
+        self.share_ctc = args.share_ctc
 
         # below means the last number becomes eos/sos ID
         # note that sos/eos IDs are identical
@@ -173,7 +237,8 @@ class E2E(torch.nn.Module):
         # subsample info
         # +1 means input (+1) and layers outputs (args.elayer)
         subsample = np.ones(args.elayers + 1, dtype=np.int)
-        if args.etype == 'blstmp':
+        if args.etype in ['blstmp', 'blstmpbn', 'multiVggblstmBlstmp', 'multiVggdil2blstmBlstmp','multiBandBlstmpBlstmp','highBandBlstmp','lowBandBlstmp','multiVgg8blstmBlstmp','multiVggblstmpBlstmp','multiVggblstmpBlstmpFixed4','multiVggblstmBlstmpFixed4','amiCH1BlstmpCH2Blstmp','amiCH1Blstmp', 'amiCH2Blstmp']:
+        # if args.etype in ['blstmp']:
             ss = args.subsample.split("_")
             for j in range(min(args.elayers + 1, len(ss))):
                 subsample[j] = int(ss[j])
@@ -186,15 +251,15 @@ class E2E(torch.nn.Module):
         # label smoothing info
         if args.lsm_type:
             logging.info("Use label smoothing with " + args.lsm_type)
-            labeldist = label_smoothing_dist(odim, args.lsm_type, transcript=args.train_label)
+            labeldist = label_smoothing_dist(odim, args.lsm_type, transcript=args.train_json)
         else:
             labeldist = None
 
         # encoder
         self.enc = Encoder(args.etype, idim, args.elayers, args.eunits, args.eprojs,
-                           self.subsample, args.dropout_rate)
+                           self.subsample, args.dropout_rate, num_enc = args.num_enc)
         # ctc
-        self.ctc = CTC(odim, args.eprojs, args.dropout_rate)
+        self.ctc = CTC(odim, args.eprojs, args.dropout_rate, num_enc = args.num_enc, share_ctc=self.share_ctc)
         # attention
         if args.atype == 'noatt':
             self.att = NoAtt()
@@ -212,9 +277,9 @@ class E2E(torch.nn.Module):
             self.att = AttLocRec(args.eprojs, args.dunits,
                                  args.adim, args.aconv_chans, args.aconv_filts)
         elif args.atype == 'coverage':
-            self.att = AttCov(args.eprojs, args.dunits, args.adim, args.awin)
+            self.att = AttCov(args.eprojs, args.dunits, args.adim)
         elif args.atype == 'coverage_location':
-            self.att = AttCovLoc(args.eprojs, args.dunits, args.adim, args.awin,
+            self.att = AttCovLoc(args.eprojs, args.dunits, args.adim,
                                  args.aconv_chans, args.aconv_filts)
         elif args.atype == 'multi_head_dot':
             self.att = AttMultiHeadDot(args.eprojs, args.dunits,
@@ -230,6 +295,59 @@ class E2E(torch.nn.Module):
             self.att = AttMultiHeadMultiResLoc(args.eprojs, args.dunits,
                                                args.aheads, args.adim, args.adim,
                                                args.aconv_chans, args.aconv_filts)
+        # elif args.atype == 'me_loc':
+        #     self.att = MultiEncAttLoc(args.eprojs, args.dunits,
+        #                       args.adim, args.aconv_chans, args.aconv_filts, num_enc=args.num_enc)
+        # elif args.atype == 'me_loc_l2w0.5':
+        #     self.att = MultiEncAttLoc(args.eprojs, args.dunits,
+        #                       args.adim, args.aconv_chans, args.aconv_filts, num_enc=args.num_enc, fixL2Weight=True, evalL2Weight=args.evalL2Weight)
+        # elif args.atype == 'me_loc_l2dp':
+        #     self.att = MultiEncAttLoc(args.eprojs, args.dunits,
+        #                       args.adim, args.aconv_chans, args.aconv_filts, num_enc=args.num_enc, l2Dropout=True)
+        elif args.atype == 'enc2_add':
+            self.att = Enc2AttAdd(args.eprojs, args.dunits,
+                              args.adim, num_enc=args.num_enc)
+        elif args.atype == 'enc2_add_l2w0.5':
+            if 'l2_weight' not in vars(args): # training stage
+                self.att = Enc2AttAdd(args.eprojs, args.dunits,
+                                      args.adim, num_enc=args.num_enc, l2_weight=0.5, l2_dropout=False)
+            else: # decoding stage
+                self.att = Enc2AttAdd(args.eprojs, args.dunits,
+                                      args.adim, num_enc=args.num_enc, l2_weight=args.l2_weight, l2_dropout=False)
+        elif args.atype == 'enc2_add_l2dp':
+            self.att = Enc2AttAdd(args.eprojs, args.dunits,
+                              args.adim, num_enc=args.num_enc, l2_dropout=True)
+
+        elif args.atype == 'enc2_add_linproj':
+            self.att = Enc2AttAddLinProj(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=False, l2_weight=0.5, apply_tanh=False)
+        elif args.atype == 'enc2_add_linprojtanh':
+            self.att = Enc2AttAddLinProj(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=False, l2_weight=0.5, apply_tanh=True)
+        elif args.atype == 'enc2_add_addlinproj':
+            self.att = Enc2AttAddLinProj(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=False, l2_weight=None, apply_tanh=False)
+        elif args.atype == 'enc2_add_addlinprojtanh':
+            self.att = Enc2AttAddLinProj(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=False, l2_weight=None, apply_tanh=True)
+        elif args.atype == 'enc2_none_frmaddlinproj':
+            self.att = Enc2AttAddFrmLinProj(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=False, l1_weight = 1.0, l2_stream_weight = 1.0, apply_tanh = False)
+        elif args.atype == 'enc2_none_frmaddlinprojtanh':
+            self.att = Enc2AttAddFrmLinProj(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=False, l1_weight = 1.0, l2_stream_weight = 1.0, apply_tanh = True)
+        elif args.atype == 'enc2_none_frmaddaddlinprojtanh':
+            self.att = Enc2AttAddFrmLinProj(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=False, l1_weight = 1.0, l2_stream_weight = None, apply_tanh = True)
+        elif args.atype == 'enc2_add_frmaddlinproj':
+            self.att = Enc2AttAddFrmLinProj(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=False, l1_weight = None, l2_stream_weight = 1.0, apply_tanh = False)
+        elif args.atype == 'enc2_add_frmaddlinprojtanh':
+            self.att = Enc2AttAddFrmLinProj(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=False, l1_weight = None, l2_stream_weight = 1.0, apply_tanh = True)
+        elif args.atype == 'enc2_add_frmaddaddlinprojtanh':
+            self.att = Enc2AttAddFrmLinProj(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=False, l1_weight = None, l2_stream_weight = None, apply_tanh = True)
         else:
             logging.error(
                 "Error: need to specify an appropriate attention archtecture")
@@ -237,7 +355,7 @@ class E2E(torch.nn.Module):
         # decoder
         self.dec = Decoder(args.eprojs, odim, args.dlayers, args.dunits,
                            self.sos, self.eos, self.att, self.verbose, self.char_list,
-                           labeldist, args.lsm_weight)
+                           labeldist, args.lsm_weight, num_enc = args.num_enc)
 
         # weight initialization
         self.init_like_chainer()
@@ -278,7 +396,7 @@ class E2E(torch.nn.Module):
         # utt list of frame x dim
         xs = [d[1]['feat'] for d in data]
         # remove 0-output-length utterances
-        tids = [d[1]['tokenid'].split() for d in data]
+        tids = [d[1]['output'][0]['tokenid'].split() for d in data]
         filtered_index = filter(lambda i: len(tids[i]) > 0, range(len(xs)))
         sorted_index = sorted(filtered_index, key=lambda i: -len(xs[i]))
         if len(sorted_index) != len(xs):
@@ -288,21 +406,21 @@ class E2E(torch.nn.Module):
         # utt list of olen
         ys = [np.fromiter(map(int, tids[i]), dtype=np.int64)
               for i in sorted_index]
-        if self.training:
-            ys = [to_cuda(self, Variable(torch.from_numpy(y))) for y in ys]
+        if torch_is_old:
+            ys = [to_cuda(self, Variable(torch.from_numpy(y), volatile=not self.training)) for y in ys]
         else:
-            ys = [to_cuda(self, Variable(torch.from_numpy(y), volatile=True)) for y in ys]
+            ys = [to_cuda(self, torch.from_numpy(y)) for y in ys]
 
         # subsample frame
         xs = [xx[::self.subsample[0], :] for xx in xs]
         ilens = np.fromiter((xx.shape[0] for xx in xs), dtype=np.int64)
-        if self.training:
-            hs = [to_cuda(self, Variable(torch.from_numpy(xx))) for xx in xs]
+        if torch_is_old:
+            hs = [to_cuda(self, Variable(torch.from_numpy(xx), volatile=not self.training)) for xx in xs]
         else:
-            hs = [to_cuda(self, Variable(torch.from_numpy(xx), volatile=True)) for xx in xs]
+            hs = [to_cuda(self, torch.from_numpy(xx)) for xx in xs]
 
         # 1. encoder
-        xpad = pad_list(hs)
+        xpad = pad_list(hs, 0.0)
         hpad, hlens = self.enc(xpad, ilens)
 
         # # 3. CTC loss
@@ -333,8 +451,12 @@ class E2E(torch.nn.Module):
         # subsample frame
         x = x[::self.subsample[0], :]
         ilen = [x.shape[0]]
-        h = to_cuda(self, Variable(torch.from_numpy(
-            np.array(x, dtype=np.float32)), volatile=True))
+        if torch_is_old:
+            h = to_cuda(self, Variable(torch.from_numpy(
+                np.array(x, dtype=np.float32)), volatile=True))
+        else:
+            h = to_cuda(self, torch.from_numpy(
+                np.array(x, dtype=np.float32)))
 
         # 1. encoder
         # make a utt list (1) to use the same interface for encoder
@@ -342,17 +464,73 @@ class E2E(torch.nn.Module):
 
         # calculate log P(z_t|X) for CTC scores
         if recog_args.ctc_weight > 0.0:
-            lpz = self.ctc.log_softmax(h).data[0]
+            if self.num_enc == 1:
+                lpz = self.ctc.log_softmax(h).data[0]
+            else:
+                lpz = [self.ctc.log_softmax(h)[idx].data[0] for idx in range(self.num_enc)]
+
         else:
             lpz = None
 
         # 2. decoder
         # decode the first utterance
-        y = self.dec.recognize_beam(h[0], lpz, recog_args, char_list, rnnlm)
+        y = self.dec.recognize_beam(h, lpz, recog_args, char_list, rnnlm)
 
         if prev:
             self.train()
         return y
+
+    def calculate_all_attentions(self, data):
+        '''E2E attention calculation
+
+        :param list data: list of dicts of the input (B)
+        :return: attention weights with the following shape,
+            1) multi-head case => attention weights (B, H, Lmax, Tmax),
+            2) other case => attention weights (B, Lmax, Tmax).
+         :rtype: float ndarray
+        '''
+        if not torch_is_old:
+            torch.set_grad_enabled(False)
+
+        # utt list of frame x dim
+        xs = [d[1]['feat'] for d in data]
+
+        # remove 0-output-length utterances
+        tids = [d[1]['output'][0]['tokenid'].split() for d in data]
+        filtered_index = filter(lambda i: len(tids[i]) > 0, range(len(xs)))
+        sorted_index = sorted(filtered_index, key=lambda i: -len(xs[i]))
+        if len(sorted_index) != len(xs):
+            logging.warning('Target sequences include empty tokenid (batch %d -> %d).' % (
+                len(xs), len(sorted_index)))
+        xs = [xs[i] for i in sorted_index]
+
+        # utt list of olen
+        ys = [np.fromiter(map(int, tids[i]), dtype=np.int64)
+              for i in sorted_index]
+        if torch_is_old:
+            ys = [to_cuda(self, Variable(torch.from_numpy(y), volatile=True)) for y in ys]
+        else:
+            ys = [to_cuda(self, torch.from_numpy(y)) for y in ys]
+
+        # subsample frame
+        xs = [xx[::self.subsample[0], :] for xx in xs]
+        ilens = np.fromiter((xx.shape[0] for xx in xs), dtype=np.int64)
+        if torch_is_old:
+            hs = [to_cuda(self, Variable(torch.from_numpy(xx), volatile=True)) for xx in xs]
+        else:
+            hs = [to_cuda(self, torch.from_numpy(xx)) for xx in xs]
+
+        # encoder
+        xpad = pad_list(hs, 0.0)
+        hpad, hlens = self.enc(xpad, ilens)
+
+        # decoder
+        att_ws = self.dec.calculate_all_attentions(hpad, hlens, ys)
+
+        if not torch_is_old:
+            torch.set_grad_enabled(True)
+
+        return att_ws
 
 
 # ------------- CTC Network --------------------------------------------------------------------------------------------
@@ -372,8 +550,19 @@ class _ChainerLikeCTC(warp_ctc._CTC):
                   act_lens,
                   minibatch_size,
                   costs)
-        # modified only here from original
         costs = torch.FloatTensor([costs.sum()]) / acts.size(1)
+
+        # debug :
+        # issue: inf cost reported when using rcnn with ctc. No sure why yet
+# import warpctc_pytorch as warp_ctc
+# import torch
+# import numpy as np
+# g1=np.load('g1.npy');ll1=np.load('ll1.npy');al1=np.load('al1.npy');l1=np.load('l1.npy');a1=np.load('a1.npy');c1=np.load('c1.npy')
+# g1 = torch.from_numpy(g1);
+# al1 = torch.from_numpy(al1);
+# a1 = torch.from_numpy(a1);ll1 = torch.from_numpy(ll1);l1 = torch.from_numpy(l1);c1 = torch.from_numpy(c1)
+# warp_ctc.cpu_ctc(a1, g1, l1, ll1, al1, 1, c1)
+
         ctx.grads = Variable(grads)
         ctx.grads /= ctx.grads.size(1)
 
@@ -397,12 +586,20 @@ def chainer_like_ctc_loss(acts, labels, act_lens, label_lens):
 
 
 class CTC(torch.nn.Module):
-    def __init__(self, odim, eprojs, dropout_rate):
+    def __init__(self, odim, eprojs, dropout_rate, num_enc, share_ctc=True):
         super(CTC, self).__init__()
         self.dropout_rate = dropout_rate
         self.loss = None
-        self.ctc_lo = torch.nn.Linear(eprojs, odim)
+
+        if share_ctc:
+            self.ctc_lo = torch.nn.Linear(eprojs, odim)
+        else:
+            for idx in range(num_enc):
+                setattr(self, "ctc_lo_%d" % idx, torch.nn.Linear(eprojs, odim))
+
         self.loss_fn = chainer_like_ctc_loss  # CTCLoss()
+        self.num_enc = num_enc
+        self.share_ctc = share_ctc
 
     def forward(self, hpad, ilens, ys):
         '''CTC forward
@@ -412,26 +609,57 @@ class CTC(torch.nn.Module):
         :return:
         '''
         self.loss = None
-        ilens = Variable(torch.from_numpy(np.fromiter(ilens, dtype=np.int32)))
-        olens = Variable(torch.from_numpy(np.fromiter(
-            (x.size(0) for x in ys), dtype=np.int32)))
 
-        # zero padding for hs
-        y_hat = linear_tensor(
-            self.ctc_lo, F.dropout(hpad, p=self.dropout_rate))
+        if self.num_enc == 1:
+            ilens = Variable(torch.from_numpy(np.fromiter(ilens, dtype=np.int32)))
+            olens = Variable(torch.from_numpy(np.fromiter(
+                (x.size(0) for x in ys), dtype=np.int32)))
 
-        # zero padding for ys
-        y_true = torch.cat(ys).cpu().int()  # batch x olen
+            # zero padding for hs
+            y_hat = linear_tensor(
+                self.ctc_lo, F.dropout(hpad, p=self.dropout_rate))
 
-        # get length info
-        logging.info(self.__class__.__name__ + ' input lengths:  ' + str(ilens))
-        logging.info(self.__class__.__name__ + ' output lengths: ' + str(olens))
+            # zero padding for ys
+            y_true = torch.cat(ys).cpu().int()  # batch x olen
 
-        # get ctc loss
-        # expected shape of seqLength x batchSize x alphabet_size
-        y_hat = y_hat.transpose(0, 1)
-        self.loss = to_cuda(self, self.loss_fn(y_hat, y_true, ilens, olens))
-        logging.info('ctc loss:' + str(self.loss.data[0]))
+            # get length info
+            logging.info(self.__class__.__name__ + ' input lengths:  ' + ''.join(str(ilens).split('\n')))
+            logging.info(self.__class__.__name__ + ' output lengths: ' + ''.join(str(olens).split('\n')))
+
+            # get ctc loss
+            # expected shape of seqLength x batchSize x alphabet_size
+            y_hat = y_hat.transpose(0, 1)
+            self.loss = to_cuda(self, self.loss_fn(y_hat, y_true, ilens, olens))
+            logging.info('ctc loss:' + str(self.loss.data[0]))
+        else: # multi-encoder case
+            assert len(hpad) == len(ilens)
+            ilens = [Variable(torch.from_numpy(np.fromiter(ilens[idx], dtype=np.int32))) for idx in range(self.num_enc)]
+            olens = Variable(torch.from_numpy(np.fromiter(
+                (x.size(0) for x in ys), dtype=np.int32)))
+
+            # zero padding for hs
+            if self.share_ctc:
+                y_hat = [linear_tensor(self.ctc_lo, F.dropout(h, p=self.dropout_rate)) for idx, h
+                         in enumerate(hpad)]
+            else:
+                y_hat = [linear_tensor(getattr(self, "ctc_lo_%d" % idx), F.dropout(h, p=self.dropout_rate)) for idx, h
+                         in enumerate(hpad)]
+
+
+            # zero padding for ys
+            y_true = torch.cat(ys).cpu().int()  # batch x olen
+
+            # get length info
+            [logging.info(self.__class__.__name__ + ' input lengths:  ' + ''.join(str(ilens[idx]).split('\n'))) for idx in range(self.num_enc)]
+            logging.info(self.__class__.__name__ + ' output lengths: ' + ''.join(str(olens).split('\n')))
+
+            # get ctc loss
+            # expected shape of seqLength x batchSize x alphabet_size
+            y_hat = [y_hat[idx].transpose(0, 1) for idx in range(self.num_enc)]
+            self.loss = [to_cuda(self, self.loss_fn(y_hat[idx], y_true, ilens[idx], olens)) for idx in range(self.num_enc)]
+            self.loss = torch.mean(torch.cat(self.loss,dim=0))
+
+            logging.info('ctc loss:' + str(self.loss.data[0]))
 
         return self.loss
 
@@ -441,7 +669,12 @@ class CTC(torch.nn.Module):
         :param hs:
         :return:
         '''
-        return F.log_softmax(linear_tensor(self.ctc_lo, hpad), dim=2)
+        if self.num_enc == 1:
+            return F.log_softmax(linear_tensor(self.ctc_lo, hpad), dim=2)
+        if self.share_ctc:
+            return [F.log_softmax(linear_tensor(self.ctc_lo, h), dim=2) for h in hpad]
+        else:
+            return [F.log_softmax(linear_tensor(getattr(self, "ctc_lo_%d" % idx), h), dim=2) for idx, h in enumerate(hpad)]
 
 
 def mask_by_length(xs, length, fill=0):
@@ -482,7 +715,6 @@ class NoAtt(torch.nn.Module):
         :return: previous attentioin weights
         :rtype: Variable
         '''
-
         batch = len(enc_hs_pad)
         # pre-compute all h outside the decoder loop
         if self.pre_compute_enc_h is None:
@@ -631,8 +863,8 @@ class AttAdd(torch.nn.Module):
         # weighted sum over flames
         # utt x hdim
         # NOTE use bmm instead of sum(*)
-        c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
-
+        # c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+        c = torch.matmul(w.unsqueeze(1), self.enc_h).squeeze(1)
         return c, w
 
 
@@ -692,7 +924,12 @@ class AttLoc(torch.nn.Module):
             self.enc_h = enc_hs_pad  # utt x frame x hdim
             self.h_length = self.enc_h.size(1)
             # utt x frame x att_dim
+            logging.info(self.enc_h.type())
+            logging.info(self.enc_h.size(1))
+            logging.info(next(self.mlp_enc.parameters()).is_cuda)
+            # logging.info(self.mlp_enc.type())
             self.pre_compute_enc_h = linear_tensor(self.mlp_enc, self.enc_h)
+            logging.info(self.pre_compute_enc_h.type())
 
         if dec_z is None:
             dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
@@ -725,10 +962,718 @@ class AttLoc(torch.nn.Module):
 
         # weighted sum over flames
         # utt x hdim
-        # NOTE use bmm instead of sum(*)
-        c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+        # NOTE equivalent to c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+        c = torch.matmul(w.unsqueeze(1), self.enc_h).squeeze(1)
 
         return c, w
+
+#TODO check with Enc2AttAdd
+# class MultiEncAttLoc(torch.nn.Module): # TODO: change it according to MultiEncAttAdd
+#     '''location-aware attention
+#
+#     :param int eprojs: # projection-units of encoder
+#     :param int dunits: # units of decoder
+#     :param int att_dim: attention dimension
+#     :param int aconv_chans: # channels of attention convolution
+#     :param int aconv_filts: filter size of attention convolution
+#      :param int numEncStreams: # of encoder stream
+#     :param int l2Dropout: flag to apply level-2 dropout
+#     :param int fixL2Weight: flag to fix level-2 weight
+#     :param int trnL2Weight: During trainng, fix level-2 weight of the first encoder. [only fixL2Weight=True]
+#     :param int evalL2Weight: During trainng, fix level-2 weight of the first encoder. [only fixL2Weight=True]
+#     '''
+#
+#     def __init__(self, eprojs, dunits, att_dim, aconv_chans, aconv_filts, numEncStreams, l2Dropout=False, fixL2Weight=False, trnL2Weight=0.5, evalL2Weight=None):
+#         super(MultiEncAttLoc, self).__init__()
+#
+#         # level 1 attention: one attention mechanism for each stream
+#
+#         for idx in range(numEncStreams):
+#             setattr(self, "mlp_enc%d_l1" % idx, torch.nn.Linear(eprojs, att_dim))
+#             setattr(self, "mlp_dec%d_l1" % idx, torch.nn.Linear(dunits, att_dim, bias=False))
+#             setattr(self, "mlp_att%d_l1" % idx, torch.nn.Linear(aconv_chans, att_dim, bias=False))
+#             setattr(self, "loc_conv%d_l1" % idx, torch.nn.Conv2d(
+#             1, aconv_chans, (1, 2 * aconv_filts + 1), padding=(0, aconv_filts), bias=False))
+#             setattr(self, "gvec%d_l1" % idx, torch.nn.Linear(att_dim, 1))
+#
+#
+#         if not fixL2Weight: # l2weight is the fix attention weight for first stream
+#             # level 2 attention: one attention mechanism for stream selection
+#             self.mlp_enc_l2 = torch.nn.Linear(eprojs, att_dim)
+#             self.mlp_dec_l2 = torch.nn.Linear(dunits, att_dim, bias=False)
+#             self.mlp_att_l2 = torch.nn.Linear(aconv_chans, att_dim, bias=False)
+#             self.loc_conv_l2 = torch.nn.Conv2d(
+#                 1, aconv_chans, (1, 2 * aconv_filts + 1), padding=(0, aconv_filts), bias=False)
+#             self.gvec_l2 = torch.nn.Linear(att_dim, 1)
+#
+#
+#         if l2Dropout:
+#             self.dropout_l2 = torch.nn.Dropout2d(p=0.5)
+#
+#         self.dunits = dunits
+#         self.eprojs = eprojs
+#         self.att_dim = att_dim
+#         self.h_length_l1 = None
+#         self.h_length_l2 = None
+#         self.enc_h_l1 = None
+#         self.enc_h_l2 = None
+#         self.pre_compute_enc_h_l1 = None
+#         self.pre_compute_enc_h_l2 = None
+#         self.aconv_chans = aconv_chans
+#         self.numEncStreams = numEncStreams
+#         self.l2Weight = evalL2Weight if evalL2Weight is not None else trnL2Weight #weight for the frist encoder; during training, keep evalL2Weight as None
+#         # TODO: only support two encoders here
+#         self.l2Droupout = l2Dropout
+#         self.fixL2Weight = fixL2Weight
+#
+#
+#     def reset(self):
+#         '''reset states'''
+#         self.h_length_l1 = None
+#         self.h_length_l2 = None
+#         self.enc_h_l1 = None
+#         self.enc_h_l2 = None
+#         self.pre_compute_enc_h_l1 = None
+#         self.pre_compute_enc_h_l2 = None
+#
+#     def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev, scaling=2.0):
+#         '''AttLoc forward
+#
+#         :param Variable enc_hs_pad: list of padded encoder hidden state (list(B x T_max x D_enc))
+#         :param list enc_h_len: list of padded encoder hidden state lenght list((B))
+#         :param Variable dec_z: docoder hidden state (B x D_dec)
+#         :param Variable att_prev: list of previous attetion weight list(B x T_max)
+#         :param float scaling: scaling parameter before applying softmax
+#         :return: attentioin weighted encoder state (B, D_enc)
+#         :rtype: Variable
+#         :return: list of previous attentioin weights list(B x T_max)
+#         :rtype: Variable
+#         '''
+#
+#         # level 1 attention
+#         batch = len(enc_hs_pad[0])
+#         # pre-compute all h outside the decoder loop
+#
+#         if self.pre_compute_enc_h_l1 is None:
+#             self.enc_h_l1 = enc_hs_pad  # list (utt x frame x hdim)
+#             self.h_length_l1 = [self.enc_h_l1[idx].size(1) for idx in range(self.numEncStreams)]
+#             # utt x frame x att_dim
+#             self.pre_compute_enc_h_l1 = [linear_tensor(getattr(self, "mlp_enc%d_l1" % idx), self.enc_h_l1[idx]) for idx in range(self.numEncStreams)]
+#
+#         if dec_z is None:
+#             dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
+#         else:
+#             dec_z = dec_z.view(batch, self.dunits)
+#
+#         # initialize attention weight with uniform dist.
+#         if att_prev is None:
+#             att_prev_l1 = [[Variable(enc_hs_pad[0].data.new(
+#                 l).zero_() + (1.0 / l)) for l in enc_hs_len[idx]] for idx in range(self.numEncStreams)]
+#             # if no bias, 0 0-pad goes 0
+#             att_prev_l1 = [pad_list(att_prev_l1[idx], 0) for idx in range(self.numEncStreams)]
+#
+#             if self.fixL2Weight:
+#                 att_prev_l2 = []
+#                 w_np = np.array([self.l2Weight, 1 - self.l2Weight]) # hard coded for two encoders
+#                 for _ in range(batch):
+#                     w = Variable(torch.from_numpy(w_np).type(enc_hs_pad[0].data.type()))
+#                     att_prev_l2 += [w]
+#             else:
+#                 att_prev_l2 = [Variable(enc_hs_pad[0].data.new(
+#                     self.numEncStreams).zero_() + (1.0 / self.numEncStreams)) for _ in range(batch)]
+#
+#             att_prev_l2 = pad_list(att_prev_l2, 0) # utt x frame_max
+#             att_prev = [att_prev_l1, att_prev_l2] # [[att_l1_1, att_l1_2, ...], att_l2_1]
+#
+#         # att_prev: utt x frame -> utt x 1 x 1 x frame -> utt x att_conv_chans x 1 x frame
+#         att_conv_l1 = [getattr(self, "loc_conv%d_l1" % idx)(att_prev[0][idx].view(batch, 1, 1, self.h_length_l1[idx])) for idx in range(self.numEncStreams)]
+#         # att_conv: utt x att_conv_chans x 1 x frame -> utt x frame x att_conv_chans
+#         att_conv_l1 = [att_conv_l1[idx].squeeze(2).transpose(1, 2) for idx in range(self.numEncStreams)]
+#         # att_conv: utt x frame x att_conv_chans -> utt x frame x att_dim
+#         att_conv_l1 = [linear_tensor(getattr(self, "mlp_att%d_l1" % idx), att_conv_l1[idx]) for idx in range(self.numEncStreams)]
+#
+#         # dec_z_tiled: utt x frame x att_dim
+#         dec_z_tiled_l1 = [getattr(self, "mlp_dec%d_l1" % idx)(dec_z).view(batch, 1, self.att_dim) for idx in range(self.numEncStreams)]
+#
+#         # dot with gvec
+#         # list(utt x frame x att_dim) -> list(utt x frame)
+#         # NOTE consider zero padding when compute w.
+#         e_l1 = [linear_tensor(getattr(self, "gvec%d_l1" % idx), torch.tanh(
+#             att_conv_l1[idx] + self.pre_compute_enc_h_l1[idx] + dec_z_tiled_l1[idx])).squeeze(2) for idx in range(self.numEncStreams)]
+#         w_l1 = [F.softmax(scaling * e_l1[idx], dim=1) for idx in range(self.numEncStreams)]
+#
+#         # weighted sum over flames
+#         # list (utt x hdim)
+#         # NOTE equivalent to c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+#         self.enc_h_l2 = [torch.matmul(w_l1[idx].unsqueeze(1), self.enc_h_l1[idx]).squeeze(1) for idx in range(self.numEncStreams)]
+#         self.enc_h_l2 = torch.stack(self.enc_h_l2, dim=1)  # utt x numEncStream x hdim
+#
+#         if self.l2Droupout: # TODO: (0,0) situation
+#             self.enc_h_l2 = self.dropout_l2(self.enc_h_l2.unsqueeze(3)).squeeze(3)
+#
+#         # level 2 attention
+#         if self.fixL2Weight:
+#             w_l2 = att_prev[1]
+#         else:
+#             self.h_length_l2 = self.numEncStreams
+#             self.pre_compute_enc_h_l2 = linear_tensor(self.mlp_enc_l2, self.enc_h_l2)
+#
+#             # att_prev: utt x frame -> utt x 1 x 1 x frame -> utt x att_conv_chans x 1 x frame
+#             att_conv_l2 = self.loc_conv_l2(att_prev[1].view(batch, 1, 1, self.h_length_l2))
+#             # att_conv: utt x att_conv_chans x 1 x frame -> utt x frame x att_conv_chans
+#             att_conv_l2 = att_conv_l2.squeeze(2).transpose(1, 2)
+#             # att_conv: utt x frame x att_conv_chans -> utt x frame x att_dim
+#             att_conv_l2 = linear_tensor(self.mlp_att_l2, att_conv_l2)
+#
+#             # dec_z_tiled: utt x frame x att_dim
+#             dec_z_tiled_l2 = self.mlp_dec_l2(dec_z).view(batch, 1, self.att_dim)
+#
+#             # dot with gvec
+#             # utt x frame x att_dim -> utt x frame
+#             # NOTE consider zero padding when compute w.
+#             e_l2 = linear_tensor(self.gvec_l2, torch.tanh(
+#                 att_conv_l2 + self.pre_compute_enc_h_l2 + dec_z_tiled_l2)).squeeze(2)
+#             w_l2 = F.softmax(scaling * e_l2, dim=1)
+#
+#
+#         # weighted sum over flames
+#         # utt x hdim
+#         # NOTE equivalent to c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+#         c_l2 = torch.matmul(w_l2.unsqueeze(1), self.enc_h_l2).squeeze(1)
+#         # logging.info(self.__class__.__name__ + ' level two attention weight: ' )
+#         logging.warning(w_l2.data[0])
+#
+#         return c_l2, [w_l1, w_l2]
+
+class Enc2AttAdd(torch.nn.Module):
+    '''add attention with 2 encoder streams
+
+    :param int eprojs: # projection-units of encoder
+    :param int dunits: # units of decoder
+    :param int att_dim: attention dimension
+    :param int num_enc: # of encoder stream
+    :param int l2_dropout: flag to apply level-2 dropout
+    :param int l2_weight: fix the first encoder with l2_weight, second one has 1-l2_weight. default: None, do adaptive l2_weight learning. 
+    '''
+    # __init__ will define the architecture of the attention model
+    # chnage the l2Weight when recog
+    def __init__(self, eprojs, dunits, att_dim, num_enc=2, l2_dropout=False, l2_weight=None):
+        super(Enc2AttAdd, self).__init__()
+
+        # level 1 attention: one attention mechanism for each stream
+
+        for idx in range(num_enc):
+            setattr(self, "mlp_enc%d_l1" % idx, torch.nn.Linear(eprojs, att_dim))
+            setattr(self, "mlp_dec%d_l1" % idx, torch.nn.Linear(dunits, att_dim, bias=False))
+            setattr(self, "gvec%d_l1" % idx, torch.nn.Linear(att_dim, 1))
+
+        if l2_weight is None: # fixed l2 weight
+            # level 2 attention: one attention mechanism for stream selection
+            self.mlp_enc_l2 = torch.nn.Linear(eprojs, att_dim)
+            self.mlp_dec_l2 = torch.nn.Linear(dunits, att_dim, bias=False)
+            self.gvec_l2 = torch.nn.Linear(att_dim, 1)
+
+        if l2_dropout:
+            self.dropout_l2 = torch.nn.Dropout2d(p=0.5)
+
+        self.dunits = dunits
+        self.eprojs = eprojs
+        self.att_dim = att_dim
+        self.h_length_l1 = None
+        self.h_length_l2 = None
+        self.enc_h_l1 = None
+        self.enc_h_l2 = None
+        self.pre_compute_enc_h_l1 = None
+        self.pre_compute_enc_h_l2 = None
+        self.num_enc = num_enc
+        self.l2_weight = l2_weight
+        self.l2_dropout = l2_dropout
+
+    def reset(self):
+        '''reset states'''
+        self.h_length_l1 = None
+        self.h_length_l2 = None
+        self.enc_h_l1 = None
+        self.enc_h_l2 = None
+        self.pre_compute_enc_h_l1 = None
+        self.pre_compute_enc_h_l2 = None
+
+    def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev, scaling=2.0):
+        '''AttLoc forward
+
+        :param Variable enc_hs_pad: list of padded encoder hidden state (list(B x T_max x D_enc))
+        :param list enc_h_len: list of padded encoder hidden state lenght list((B))
+        :param Variable dec_z: docoder hidden state (B x D_dec)
+        :param Variable att_prev: list of previous attetion weight list(B x T_max)
+        :param float scaling: scaling parameter before applying softmax
+        :return: attentioin weighted encoder state (B, D_enc)
+        :rtype: Variable
+        :return: list of previous attentioin weights [list(B x T_max), B x T_max] --> l1 and l2
+        :rtype: Variable
+        '''
+
+        # level 1 attention
+        batch = len(enc_hs_pad[0])
+        # pre-compute all h outside the decoder loop
+
+        if self.pre_compute_enc_h_l1 is None:
+            self.enc_h_l1 = enc_hs_pad  # list (utt x frame x hdim)
+            self.h_length_l1 = [self.enc_h_l1[idx].size(1) for idx in range(self.num_enc)]
+            # utt x frame x att_dim
+            self.pre_compute_enc_h_l1 = [linear_tensor(getattr(self, "mlp_enc%d_l1" % idx), self.enc_h_l1[idx]) for idx in range(self.num_enc)]
+
+        if dec_z is None:
+            dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
+        else:
+            dec_z = dec_z.view(batch, self.dunits)
+
+        # initialize attention weight with uniform dist.
+        if att_prev is None:
+            att_prev_l1 = None
+
+            if self.l2_weight is None:
+                att_prev_l2 = [Variable(enc_hs_pad[0].data.new(
+                    self.num_enc).zero_() + (1.0 / self.num_enc)) for _ in range(batch)]
+            else: # fixed l2 weight
+                att_prev_l2 = []
+                w_np = np.array([self.l2_weight, 1 - self.l2_weight]) # hard coded for two encoders
+                for _ in range(batch):
+                    w = Variable(torch.from_numpy(w_np).type(enc_hs_pad[0].data.type()))
+                    att_prev_l2 += [w]
+
+            att_prev_l2 = pad_list(att_prev_l2, 0) # utt x frame_max
+            att_prev = [att_prev_l1, att_prev_l2] # [[att_l1_1, att_l1_2, ...], att_l2_1]
+
+        # dec_z_tiled: utt x frame x att_dim
+        dec_z_tiled_l1 = [getattr(self, "mlp_dec%d_l1" % idx)(dec_z).view(batch, 1, self.att_dim) for idx in range(self.num_enc)]
+
+        # dot with gvec
+        # list(utt x frame x att_dim) -> list(utt x frame)
+        # NOTE consider zero padding when compute w.
+        e_l1 = [linear_tensor(getattr(self, "gvec%d_l1" % idx), torch.tanh(
+             self.pre_compute_enc_h_l1[idx] + dec_z_tiled_l1[idx])).squeeze(2) for idx in range(self.num_enc)]
+        w_l1 = [F.softmax(scaling * e_l1[idx], dim=1) for idx in range(self.num_enc)]
+
+        # weighted sum over flames
+        # list (utt x hdim)
+        # NOTE equivalent to c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+        # self.enc_h_l2 = [torch.sum(self.enc_h_l1[idx] * w_l1[idx].view(batch, self.h_length_l1[idx], 1), dim=1) for idx in
+        #                  range(self.num_enc)]
+        self.enc_h_l2 = [torch.matmul(w_l1[idx].unsqueeze(1), self.enc_h_l1[idx]).squeeze(1) for idx in range(self.num_enc)]
+        self.enc_h_l2 = torch.stack(self.enc_h_l2, dim=1)  # utt x numEncStream x hdim
+
+        if self.l2_dropout: # TODO: (0,0) situation
+            self.enc_h_l2 = self.dropout_l2(self.enc_h_l2.unsqueeze(3)).squeeze(3)
+
+        # level 2 attention
+        if self.l2_weight is None:
+            self.h_length_l2 = self.num_enc
+            self.pre_compute_enc_h_l2 = linear_tensor(self.mlp_enc_l2, self.enc_h_l2)
+
+            # dec_z_tiled: utt x frame x att_dim
+            dec_z_tiled_l2 = self.mlp_dec_l2(dec_z).view(batch, 1, self.att_dim)
+
+            # dot with gvec
+            # utt x frame x att_dim -> utt x frame
+            # NOTE consider zero padding when compute w.
+            e_l2 = linear_tensor(self.gvec_l2, torch.tanh(
+                 self.pre_compute_enc_h_l2 + dec_z_tiled_l2)).squeeze(2)
+            w_l2 = F.softmax(scaling * e_l2, dim=1)
+        else: # fixed l2 weight
+            w_l2 = att_prev[1]
+
+
+        # weighted sum over flames
+        # utt x hdim
+        # NOTE equivalent to c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+        # c_l2 = torch.sum(self.enc_h_l2 * w_l2.view(batch, self.h_length_l2, 1), dim=1)
+        c_l2 = torch.matmul(w_l2.unsqueeze(1), self.enc_h_l2).squeeze(1)
+        logging.info(self.__class__.__name__ + ' level two attention weight: ' )
+        logging.warning(w_l2.data[0][0]) # print the l2-weight for the first stream
+
+        return c_l2, [w_l1, w_l2]
+
+
+class Enc2AttAddLinProj(torch.nn.Module):
+    '''context vector level fusion with 2 encoder streams
+    level-1 (stream level): H1=AddAttention1, H2=AddAttention2
+    level-2 (fusion level): H=[RELU*](W*concat([a1]*H1+[a2]*H2))
+        RELU is optional, [a1,a2] is optional
+    
+    :param int eprojs: # projection-units of encoder
+    :param int dunits: # units of decoder
+    :param int att_dim: attention dimension
+    :param int num_enc: # of encoder stream
+    :param int l2_dropout: flag to apply level-2 dropout
+    :param int l2_weight: fix the first encoder with l2_weight, second one has 1-l2_weight. default: None, do adaptive l2_weight learning. 
+    '''
+    # __init__ will define the architecture of the attention model
+    # chnage the l2Weight when recog
+    def __init__(self, eprojs, dunits, att_dim, num_enc=2, l2_dropout=False, l2_weight=None, apply_tanh=False):
+        super(Enc2AttAddLinProj, self).__init__()
+
+        # level 1 attention: one attention mechanism for each stream
+
+        for idx in range(num_enc):
+            setattr(self, "mlp_enc%d_l1" % idx, torch.nn.Linear(eprojs, att_dim))
+            setattr(self, "mlp_dec%d_l1" % idx, torch.nn.Linear(dunits, att_dim, bias=False))
+            setattr(self, "gvec%d_l1" % idx, torch.nn.Linear(att_dim, 1))
+
+        self.proj = torch.nn.Linear(num_enc*eprojs, eprojs) # TODO: more projection layer
+
+        if l2_weight is None: # fixed l2 weight
+            # level 2 attention: one attention mechanism for stream selection
+            self.mlp_enc_l2 = torch.nn.Linear(eprojs, att_dim)
+            self.mlp_dec_l2 = torch.nn.Linear(dunits, att_dim, bias=False)
+            self.gvec_l2 = torch.nn.Linear(att_dim, 1)
+
+        if l2_dropout:
+            self.dropout_l2 = torch.nn.Dropout2d(p=0.5)
+
+        if apply_tanh:
+            self.tanh = torch.nn.Tanh()
+
+        self.dunits = dunits
+        self.eprojs = eprojs
+        self.att_dim = att_dim
+        self.h_length_l1 = None
+        self.h_length_l2 = None
+        self.enc_h_l1 = None
+        self.enc_h_l2 = None
+        self.pre_compute_enc_h_l1 = None
+        self.pre_compute_enc_h_l2 = None
+        self.num_enc = num_enc
+        self.l2_weight = l2_weight
+        self.l2_dropout = l2_dropout
+        self.apply_tanh = apply_tanh
+
+    def reset(self):
+        '''reset states'''
+        self.h_length_l1 = None
+        self.h_length_l2 = None
+        self.enc_h_l1 = None
+        self.enc_h_l2 = None
+        self.pre_compute_enc_h_l1 = None
+        self.pre_compute_enc_h_l2 = None
+
+    def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev, scaling=2.0):
+        '''Enc2AttAddLinProj forward
+
+        :param Variable enc_hs_pad: list of padded encoder hidden state (list(B x T_max x D_enc))
+        :param list enc_h_len: list of padded encoder hidden state lenght list((B))
+        :param Variable dec_z: docoder hidden state (B x D_dec)
+        :param Variable att_prev: list of previous attetion weight list(B x T_max)
+        :param float scaling: scaling parameter before applying softmax
+        :return: attentioin weighted encoder state (B, D_enc)
+        :rtype: Variable
+        :return: list of previous attentioin weights [list(B x T_max), B x T_max] --> l1 and l2
+        :rtype: Variable
+        '''
+
+        # level 1 attention
+        batch = len(enc_hs_pad[0])
+        # assert enc_hs_pad[0].data.size()[1] == enc_hs_pad[1].data.size()[1] # enc1_t_max == enc2_t_max
+        # t_max = enc_hs_pad[1].data.size()[1]
+
+        # pre-compute all h outside the decoder loop
+
+        if self.pre_compute_enc_h_l1 is None:
+            self.enc_h_l1 = enc_hs_pad  # list (utt x frame x hdim)
+            self.h_length_l1 = [self.enc_h_l1[idx].size(1) for idx in range(self.num_enc)]
+            # utt x frame x att_dim
+            self.pre_compute_enc_h_l1 = [linear_tensor(getattr(self, "mlp_enc%d_l1" % idx), self.enc_h_l1[idx]) for idx in range(self.num_enc)]
+
+        if dec_z is None:
+            dec_z = Variable(enc_hs_pad.data.new(batch, self.dunits).zero_())
+        else:
+            dec_z = dec_z.view(batch, self.dunits)
+
+        # initialize attention weight with uniform dist.
+        if att_prev is None:
+            att_prev_l1 = None
+
+            if self.l2_weight is None:
+                att_prev_l2 = [Variable(enc_hs_pad[0].data.new(
+                    self.num_enc).zero_() + (1.0 / self.num_enc)) for _ in range(batch)]
+            else: # fixed l2 weight
+                att_prev_l2 = []
+                w_np = np.array([self.l2_weight, 1 - self.l2_weight]) # hard coded for two encoders
+                for _ in range(batch):
+                    w = Variable(torch.from_numpy(w_np).type(enc_hs_pad[0].data.type()))
+                    att_prev_l2 += [w]
+
+            att_prev_l2 = pad_list(att_prev_l2, 0) # utt x frame_max
+            att_prev = [att_prev_l1, att_prev_l2] # [[att_l1_1, att_l1_2, ...], att_l2_1]
+
+        # dec_z_tiled: utt x frame x att_dim
+        dec_z_tiled_l1 = [getattr(self, "mlp_dec%d_l1" % idx)(dec_z).view(batch, 1, self.att_dim) for idx in range(self.num_enc)]
+
+        # dot with gvec
+        # list(utt x frame x att_dim) -> list(utt x frame)
+        # NOTE consider zero padding when compute w.
+        e_l1 = [linear_tensor(getattr(self, "gvec%d_l1" % idx), torch.tanh(
+             self.pre_compute_enc_h_l1[idx] + dec_z_tiled_l1[idx])).squeeze(2) for idx in range(self.num_enc)]
+        w_l1 = [F.softmax(scaling * e_l1[idx], dim=1) for idx in range(self.num_enc)]
+
+        # weighted sum over flames
+        # list (utt x hdim)
+        # NOTE equivalent to c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+        # self.enc_h_l2 = [torch.sum(self.enc_h_l1[idx] * w_l1[idx].view(batch, self.h_length_l1[idx], 1), dim=1) for idx in range(self.num_enc)]
+        self.enc_h_l2 = [torch.matmul(w_l1[idx].unsqueeze(1), self.enc_h_l1[idx]).squeeze(1) for idx in range(self.num_enc)]
+        self.enc_h_l2 = torch.stack(self.enc_h_l2, dim=1)  # utt x numEncStream x hdim
+
+        if self.l2_dropout: # TODO: (0,0) situation
+            self.enc_h_l2 = self.dropout_l2(self.enc_h_l2.unsqueeze(3)).squeeze(3)
+
+        # level 2 attention
+        if self.l2_weight is None:
+            self.h_length_l2 = self.num_enc
+            self.pre_compute_enc_h_l2 = linear_tensor(self.mlp_enc_l2, self.enc_h_l2)
+
+            # dec_z_tiled: utt x frame x att_dim
+            dec_z_tiled_l2 = self.mlp_dec_l2(dec_z).view(batch, 1, self.att_dim)
+
+            # dot with gvec
+            # utt x frame x att_dim -> utt x frame
+            # NOTE consider zero padding when compute w.
+            e_l2 = linear_tensor(self.gvec_l2, torch.tanh(
+                 self.pre_compute_enc_h_l2 + dec_z_tiled_l2)).squeeze(2)
+            w_l2 = F.softmax(scaling * e_l2, dim=1)
+        else: # fixed l2 weight
+            w_l2 = att_prev[1]
+
+
+        # w_l2: utt x numEnc
+        # enc_h_l2:  utt x numEnc x hdim
+        self.enc_h_l2 = w_l2.unsqueeze(2) * self.enc_h_l2 # utt x num_enc x T_max
+        # utt x hdim
+        c_l2 = linear_tensor(self.proj, self.enc_h_l2.view(batch, -1))
+
+        if self.apply_tanh: c_l2 = self.tanh(c_l2)
+
+        logging.info(self.__class__.__name__ + ' level two attention weight: ' )
+        logging.warning(w_l2.data[0][0]) # print the l2-weight for the first stream
+
+        return c_l2, [w_l1, w_l2]
+
+
+class Enc2AttAddFrmLinProj(torch.nn.Module):
+    '''frame level fusion with 2 encoder streams
+    level-1 (stream level): calculate frame level attention vector at1 at2
+    level-2 (fusion level):
+        ht=[Tanh]*(W*concat([bt1]*[at1]*ht1+[bt2]*[at2]*ht2))
+        H=AddAttention(ht)
+
+    Optional: Tanh, [a1], [a2], [b1, b2]
+        attention across T [a1], [a2] and attention across streams [b1,b2]
+
+    There are three attention here:
+    a1 = AddAttention(h1,z), a2 = AddAtention(h2, z)
+    b1,b2=AddAttention(h1,h2,z)
+    H=AddAttention(concat(h1,h2),z)
+
+    :param int eprojs: # projection-units of encoder
+    :param int dunits: # units of decoder
+    :param int att_dim: attention dimension
+    :param int num_enc: # of encoder stream
+    :param int l2_dropout: flag to apply level-2 dropout
+    :param int l1_weight: fix the all a1,a2 attention with l1_weight, default: None, do adaptive l1_weight learning.
+    :param int l2_stream_weight: fix the all b1,b2 attention with l2_stream_weight, default: None, do adaptive l2_stream_weight learning.
+    '''
+
+    # __init__ will define the architecture of the attention model
+    # chnage the l2Weight when recog
+    def __init__(self, eprojs, dunits, att_dim, num_enc=2, l2_dropout=False, l1_weight=None, l2_stream_weight=None, apply_tanh=False):
+        super(Enc2AttAddFrmLinProj, self).__init__()
+
+        # level 1 attention: one attention mechanism for each stream
+        if l1_weight is None:
+            for idx in range(num_enc):
+                setattr(self, "mlp_enc%d_l1" % idx, torch.nn.Linear(eprojs, att_dim))
+                setattr(self, "mlp_dec%d_l1" % idx, torch.nn.Linear(dunits, att_dim, bias=False))
+                setattr(self, "gvec%d_l1" % idx, torch.nn.Linear(att_dim, 1))
+
+        # level 2 attention
+        if l2_stream_weight is None:
+            setattr(self, "mlp_enc_l2_stream", torch.nn.Linear(eprojs, att_dim))
+            setattr(self, "mlp_dec_l2_stream", torch.nn.Linear(dunits, att_dim, bias=False))
+            setattr(self, "gvec_l2_stream", torch.nn.Linear(att_dim, 1))
+
+        setattr(self, "mlp_enc_l2", torch.nn.Linear(eprojs, att_dim))
+        setattr(self, "mlp_dec_l2", torch.nn.Linear(dunits, att_dim, bias=False))
+        setattr(self, "gvec_l2", torch.nn.Linear(att_dim, 1))
+
+        self.proj = torch.nn.Linear(num_enc*eprojs, eprojs)  # TODO: more projection layer
+
+        if l2_dropout:
+            self.dropout_l2 = torch.nn.Dropout2d(p=0.5)
+
+        if apply_tanh:
+            self.tanh = torch.nn.Tanh()
+
+        self.dunits = dunits
+        self.eprojs = eprojs
+        self.att_dim = att_dim
+        self.h_length_l1 = None
+        self.h_length_l2 = None
+        self.h_length_l2_stream = None
+        self.enc_h_l1 = None
+        self.enc_h_l2 = None
+        self.enc_h_l2_stream = None
+        self.pre_compute_enc_h_l1 = None
+        self.pre_compute_enc_h_l2 = None
+        self.pre_compute_enc_h_l2_stream = None
+        self.num_enc = num_enc
+        self.l2_stream_weight = l2_stream_weight
+        self.l1_weight = l1_weight
+        self.l2_dropout = l2_dropout
+        self.apply_tanh = apply_tanh
+
+    def reset(self):
+        '''reset states'''
+        self.h_length_l1 = None
+        self.h_length_l2 = None
+        self.h_length_l2_stream = None
+        self.enc_h_l1 = None
+        self.enc_h_l2 = None
+        self.enc_h_l2_stream = None
+        self.pre_compute_enc_h_l1 = None
+        self.pre_compute_enc_h_l2 = None
+        self.pre_compute_enc_h_l2_stream = None
+
+    def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev, scaling=2.0):
+        '''Enc2AttAddFrmLinProj forward
+
+        :param Variable enc_hs_pad: list of padded encoder hidden state (list(B x T_max x D_enc))
+        :param list enc_h_len: list of padded encoder hidden state lenght list((B))
+        :param Variable dec_z: docoder hidden state (B x D_dec)
+        :param Variable att_prev: list of previous attetion weight list(B x T_max)
+        :param float scaling: scaling parameter before applying softmax
+        :return: attentioin weighted encoder state (B, D_enc)
+        :rtype: Variable
+        :return: list of attentioin weights [list(B x T_max), list(B x T_max), B x T_max] --> l1 and l2_stream and l2
+        :rtype: Variable
+        '''
+
+        batch = len(enc_hs_pad[0])
+        # logging.warning(batch)
+        assert enc_hs_pad[0].data.size()[1] == enc_hs_pad[1].data.size()[1]  # enc1_t_max == enc2_t_max
+        T_max = enc_hs_pad[1].data.size()[1]
+
+        if dec_z is None:
+            dec_z = Variable(enc_hs_pad[0].data.new(batch, self.dunits).zero_())
+        else:
+            dec_z = dec_z.view(batch, self.dunits)
+
+
+        # initialize attention weight with uniform dist if specified
+        if att_prev is None:
+
+            # l1
+            if self.l1_weight is None:
+                att_prev_l1 = None
+            else:
+                att_prev_l1 = [Variable(enc_hs_pad[0].data.new(batch, T_max).fill_(self.l1_weight)) for _ in range(self.num_enc)]
+            # l2_stream
+            if self.l2_stream_weight is None:
+                att_prev_l2_stream = None
+            else:
+                att_prev_l2_stream = [Variable(enc_hs_pad[0].data.new(batch, T_max).fill_(self.l2_stream_weight)) for _ in
+                               range(self.num_enc)]
+            # l2
+            att_prev_l2 = None
+
+            att_prev = [att_prev_l1, att_prev_l2_stream, att_prev_l2]
+
+
+        # level 1 attention (enc_hs_pad, dec_z --> att)
+        if self.l1_weight is None:
+            # pre-compute all h outside the decoder loop
+            if self.pre_compute_enc_h_l1 is None:
+                self.enc_h_l1 = enc_hs_pad  # list (utt x frame x hdim)
+                self.h_length_l1 = [self.enc_h_l1[idx].size(1) for idx in range(self.num_enc)]  # T_max for each encoder
+                # utt x frame x att_dim
+                self.pre_compute_enc_h_l1 = [linear_tensor(getattr(self, "mlp_enc%d_l1" % idx), self.enc_h_l1[idx]) for
+                                             idx
+                                             in range(self.num_enc)]
+
+            # dec_z_tiled: utt x frame x att_dim
+            dec_z_tiled_l1 = [getattr(self, "mlp_dec%d_l1" % idx)(dec_z).view(batch, 1, self.att_dim) for idx in
+                              range(self.num_enc)]
+
+
+            # dot with gvec
+            # list(utt x frame x att_dim) -> list(utt x frame)
+            # NOTE consider zero padding when compute w.
+            e_l1 = [linear_tensor(getattr(self, "gvec%d_l1" % idx), torch.tanh(
+                self.pre_compute_enc_h_l1[idx] + dec_z_tiled_l1[idx])).squeeze(2) for idx in range(self.num_enc)]
+            w_l1 = [F.softmax(scaling * e_l1[idx], dim=1) for idx in range(self.num_enc)]
+        else:
+            # fix w_l1: list(utt x frame)
+            w_l1 = att_prev[0]
+
+
+        # level 2 stream attention (enc_hs_pad, dec_z --> att)
+        if self.l2_stream_weight is None:
+            # pre-compute all h outside the decoder loop
+            if self.pre_compute_enc_h_l2_stream is None:
+                self.enc_h_l2_stream = enc_hs_pad  # list (utt x frame x hdim)
+                self.h_length_l2_stream = [self.enc_h_l2_stream[idx].size(1) for idx in range(self.num_enc)]  # T_max for each encoder
+                # utt x frame x att_dim
+                self.pre_compute_enc_h_l2_stream = [
+                    linear_tensor(getattr(self, "mlp_enc_l2_stream"), self.enc_h_l2_stream[idx]) for idx in
+                    range(self.num_enc)]
+
+            # dec_z_tiled: utt x frame x att_dim
+            dec_z_tiled_l2_stream = [getattr(self, "mlp_dec_l2_stream")(dec_z).view(batch, 1, self.att_dim) for _ in
+                              range(self.num_enc)]
+
+            # dot with gvec
+            # list(utt x frame x att_dim) -> list(utt x frame)
+            # NOTE consider zero padding when compute w.
+            e_l2_stream = [linear_tensor(getattr(self, "gvec_l2_stream"), torch.tanh(
+                self.pre_compute_enc_h_l2_stream[idx] + dec_z_tiled_l2_stream[idx])).squeeze(2) for idx in range(self.num_enc)]
+
+            # list(uttxframe) -> utt x numEnc x frame # TODO: organize it after debug
+            w_l2_stream = torch.stack(e_l2_stream, dim=1) # list(uttxframe) -> utt x numEnc x frame
+            w_l2_stream = F.softmax(scaling * w_l2_stream, dim=1)
+            w_l2_stream = [w_l2_stream[:,idx,:] for idx in range(self.num_enc)]
+        else:
+            # fix w_l2: list(utt x frame)
+            w_l2_stream = att_prev[1]
+
+
+        # ht = Tanh(W*concat(bt1*at1*ht1,bt2*at2*ht2))
+        # enc_hs_pad: list(utt x frame x hdim)
+        # w_l2_stream: list(utt x frame)
+        # w_l1: list(utt x frame)
+        self.enc_h_proj = [w_l1[idx].unsqueeze(2) * w_l2_stream[idx].unsqueeze(2) * enc_hs_pad[idx] for idx in range(self.num_enc)]
+        self.enc_h_proj = torch.stack(self.enc_h_proj, dim=1)  # utt x num_enc X frame x hdim
+        if self.l2_dropout: self.enc_h_proj = self.dropout_l2(self.enc_h_proj) # TODO: (0,0) situation
+        self.enc_h_proj = self.enc_h_proj.transpose(1,2).contiguous().view(batch, T_max, -1) # utt x frame x (hdim*num_enc)
+        self.enc_h_proj = linear_tensor(self.proj, self.enc_h_proj)
+        if self.apply_tanh: self.enc_h_proj = self.tanh(self.enc_h_proj)
+
+
+        # level 2 attention (enc_hs_pad, dec_z --> att)
+        # pre-compute all h outside the decoder loop
+        if self.pre_compute_enc_h_l2 is None:
+            # utt x frame x att_dim
+            self.pre_compute_enc_h_l2 = linear_tensor(getattr(self, "mlp_enc_l2"), self.enc_h_proj)
+
+        # dec_z_tiled: utt x frame x att_dim
+        dec_z_tiled_l2 = getattr(self, "mlp_dec_l2")(dec_z).view(batch, 1, self.att_dim)
+
+        # dot with gvec
+        # utt x frame x att_dim) -> utt x frame
+        # NOTE consider zero padding when compute w.
+        e_l2 = linear_tensor(getattr(self, "gvec_l2"), torch.tanh(
+            self.pre_compute_enc_h_l2 + dec_z_tiled_l2)).squeeze(2)
+        w_l2 = F.softmax(scaling * e_l2, dim=1)
+        # c_l2 = torch.sum(self.enc_h_proj * w_l2.view(batch, T_max, 1), dim=1)
+        c_l2 = torch.matmul(w_l2.unsqueeze(1), self.enc_h_proj).squeeze(1)
+
+        return c_l2, [w_l1, w_l2_stream, w_l2]
 
 
 class AttCov(torch.nn.Module):
@@ -1028,7 +1973,7 @@ class AttLocRec(torch.nn.Module):
         # NOTE use bmm instead of sum(*)
         c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
 
-        return c, (att_prev, (att_h, att_c))
+        return c, (w, (att_h, att_c))
 
 
 class AttCovLoc(torch.nn.Module):
@@ -1581,7 +2526,7 @@ def th_accuracy(y_all, pad_target, ignore_label):
 # ------------- Decoder Network ----------------------------------------------------------------------------------------
 class Decoder(torch.nn.Module):
     def __init__(self, eprojs, odim, dlayers, dunits, sos, eos, att, verbose=0,
-                 char_list=None, labeldist=None, lsm_weight=0.):
+                 char_list=None, labeldist=None, lsm_weight=0., num_enc=1):
         super(Decoder, self).__init__()
         self.dunits = dunits
         self.dlayers = dlayers
@@ -1590,7 +2535,7 @@ class Decoder(torch.nn.Module):
         self.decoder += [torch.nn.LSTMCell(dunits + eprojs, dunits)]
         for l in six.moves.range(1, self.dlayers):
             self.decoder += [torch.nn.LSTMCell(dunits, dunits)]
-        self.ignore_id = 0  # NOTE: 0 for CTC?
+        self.ignore_id = -1
         self.output = torch.nn.Linear(dunits, odim)
 
         self.loss = None
@@ -1604,6 +2549,7 @@ class Decoder(torch.nn.Module):
         self.labeldist = labeldist
         self.vlabeldist = None
         self.lsm_weight = lsm_weight
+        self.num_enc = num_enc
 
     def zero_state(self, hpad):
         return Variable(hpad.data.new(hpad.size(0), self.dunits).zero_())
@@ -1615,7 +2561,32 @@ class Decoder(torch.nn.Module):
         :param ys:
         :return:
         '''
-        hpad = mask_by_length(hpad, hlen, 0)
+        if self.num_enc == 1:
+            hpad = mask_by_length(hpad, hlen, 0)
+            hlen = list(map(int, hlen))
+
+            # initialization
+            c_list = [self.zero_state(hpad)]
+            z_list = [self.zero_state(hpad)]
+            for l in six.moves.range(1, self.dlayers):
+                c_list.append(self.zero_state(hpad))
+                z_list.append(self.zero_state(hpad))
+
+        else:
+            hpad = [mask_by_length(hpad[idx], hlen[idx], 0) for idx in range(self.num_enc)]
+            hlen = [list(map(int, hlen[idx])) for idx in range(self.num_enc)]
+
+            # initialization
+            c_list = [self.zero_state(hpad[0])]
+            z_list = [self.zero_state(hpad[0])]
+            for l in six.moves.range(1, self.dlayers):
+                c_list.append(self.zero_state(hpad[0]))
+                z_list.append(self.zero_state(hpad[0]))
+
+        att_w = None
+        z_all = []
+        self.att.reset()  # reset pre-computation of h
+
         self.loss = None
         # prepare input and output word sequences with sos/eos IDs
         eos = Variable(ys[0].data.new([self.eos]))
@@ -1633,16 +2604,6 @@ class Decoder(torch.nn.Module):
         olength = pad_ys_out.size(1)
         logging.info(self.__class__.__name__ + ' input lengths:  ' + str(hlen))
         logging.info(self.__class__.__name__ + ' output lengths: ' + str([y.size(0) for y in ys_out]))
-
-        # initialization
-        c_list = [self.zero_state(hpad)]
-        z_list = [self.zero_state(hpad)]
-        for l in six.moves.range(1, self.dlayers):
-            c_list.append(self.zero_state(hpad))
-            z_list.append(self.zero_state(hpad))
-        att_w = None
-        z_all = []
-        self.att.reset()  # reset pre-computation of h
 
         # pre-computation of embedding
         eys = self.embed(pad_ys_in)  # utt x olen x zdim
@@ -1666,13 +2627,14 @@ class Decoder(torch.nn.Module):
         # -1: eos, which is removed in the loss computation
         self.loss *= (np.mean([len(x) for x in ys_in]) - 1)
         acc = th_accuracy(y_all, pad_ys_out, ignore_label=self.ignore_id)
-        logging.info('att loss:' + str(self.loss.data))
+        logging.info('att loss:' + ''.join(str(self.loss.data).split('\n')))
 
         # show predicted character sequence for debug
         if self.verbose > 0 and self.char_list is not None:
             y_hat = y_all.view(batch, olength, -1)
             y_true = pad_ys_out
-            for (i, y_hat_), y_true_ in zip(enumerate(y_hat.data.cpu().numpy()), y_true.data.cpu().numpy()):
+            for (i, y_hat_), y_true_ in zip(enumerate(y_hat.data.cpu().numpy()),
+                                            y_true.data.cpu().numpy()):
                 if i == MAX_DECODER_OUTPUT:
                     break
                 idx_hat = np.argmax(y_hat_[y_true_ != self.ignore_id], axis=1)
@@ -1700,61 +2662,127 @@ class Decoder(torch.nn.Module):
         :param char_list:
         :return:
         '''
-        logging.info('input lengths: ' + str(h.size(0)))
-        # initialization
-        c_list = [self.zero_state(h.unsqueeze(0))]
-        z_list = [self.zero_state(h.unsqueeze(0))]
-        for l in six.moves.range(1, self.dlayers):
-            c_list.append(self.zero_state(h.unsqueeze(0)))
-            z_list.append(self.zero_state(h.unsqueeze(0)))
-        a = None
-        self.att.reset()  # reset pre-computation of h
 
         # search parms
         beam = recog_args.beam_size
         penalty = recog_args.penalty
         ctc_weight = recog_args.ctc_weight
 
-        # preprate sos
-        y = self.sos
-        vy = Variable(h.data.new(1).zero_().long(), volatile=True)
-        if recog_args.maxlenratio == 0:
-            maxlen = h.shape[0]
-        else:
-            # maxlen >= 1
-            maxlen = max(1, int(recog_args.maxlenratio * h.size(0)))
-        minlen = int(recog_args.minlenratio * h.size(0))
-        logging.info('max output length: ' + str(maxlen))
-        logging.info('min output length: ' + str(minlen))
+        # in multi stream case, h is a tuple [utt(1) x frame x hdim], lpz is also a tuple [utt(1) x frame x odim]
+        # in one stream case, h is utt(1) x frame x hdim, lpz is utt(1) x frame x odim
 
-        # initialize hypothesis
-        if rnnlm:
-            hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list,
-                   'z_prev': z_list, 'a_prev': a, 'rnnlm_prev': None}
-        else:
-            hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list, 'z_prev': z_list, 'a_prev': a}
-        if lpz is not None:
-            ctc_prefix_score = CTCPrefixScore(lpz.numpy(), 0, self.eos, np)
-            hyp['ctc_state_prev'] = ctc_prefix_score.initial_state()
-            hyp['ctc_score_prev'] = 0.0
-            if ctc_weight != 1.0:
-                # pre-pruning based on attention scores
-                ctc_beam = min(lpz.shape[-1], int(beam * CTC_SCORING_RATIO))
+        if self.num_enc == 1:
+            logging.info('input lengths: ' + str(h.size(1)))
+
+            # initialization
+            c_list = [self.zero_state(h)]
+            z_list = [self.zero_state(h)]
+            for l in six.moves.range(1, self.dlayers):
+                c_list.append(self.zero_state(h))
+                z_list.append(self.zero_state(h))
+            a = None
+            self.att.reset()  # reset pre-computation of h
+
+            # preprate sos
+            y = self.sos
+            if torch_is_old:
+                vy = Variable(h.data.new(1).zero_().long(), volatile=True)
             else:
-                ctc_beam = lpz.shape[-1]
-        hyps = [hyp]
-        ended_hyps = []
+                vy = h.new_zeros(1).long()
+
+            if recog_args.maxlenratio == 0:
+                maxlen = h.shape[1]
+            else:
+                # maxlen >= 1
+                maxlen = max(1, int(recog_args.maxlenratio * h.size(1)))
+            minlen = int(recog_args.minlenratio * h.size(0))
+            logging.info('max output length: ' + str(maxlen))
+            logging.info('min output length: ' + str(minlen))
+
+            # initialize hypothesis
+            if rnnlm:
+                hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list,
+                       'z_prev': z_list, 'a_prev': a, 'rnnlm_prev': None}
+            else:
+                hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list, 'z_prev': z_list, 'a_prev': a}
+            if lpz is not None:
+                ctc_prefix_score = CTCPrefixScore(lpz.numpy(), 0, self.eos, np)
+                hyp['ctc_state_prev'] = ctc_prefix_score.initial_state()
+                hyp['ctc_score_prev'] = 0.0
+                if ctc_weight != 1.0:
+                    # pre-pruning based on attention scores
+                    ctc_beam = min(lpz.shape[-1], int(beam * CTC_SCORING_RATIO))
+                else:
+                    ctc_beam = lpz.shape[-1]
+            hyps = [hyp]
+            ended_hyps = []
+            init_hyp = hyp.copy()
+        else:
+            logging.info('input lengths: ' + str([h[idx].size(0) for idx in range(self.num_enc)]))
+
+            # initialization
+            c_list = [self.zero_state(h[0])]
+            z_list = [self.zero_state(h[0])]
+            for l in six.moves.range(1, self.dlayers):
+                c_list.append(self.zero_state(h[0]))
+                z_list.append(self.zero_state(h[0]))
+            a = None
+            self.att.reset()  # reset pre-computation of h
+
+            # preprate sos
+            y = self.sos
+            if torch_is_old:
+                vy = Variable(h[0].data.new(1).zero_().long(), volatile=True)
+            else:
+                vy = h[0].new_zeros(1).long()
+
+            max_frame = np.amin([hh.shape[1] for hh in h])
+            if recog_args.maxlenratio == 0:
+                maxlen = max_frame
+            else:
+                # maxlen >= 1
+                maxlen = max(1, int(recog_args.maxlenratio * max_frame))
+            minlen = int(recog_args.minlenratio * max_frame)
+            logging.info('max output length: ' + str(maxlen))
+            logging.info('min output length: ' + str(minlen))
+
+            # initialize hypothesis
+            if rnnlm:
+                hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list,
+                       'z_prev': z_list, 'a_prev': a, 'rnnlm_prev': None}
+            else:
+                hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list, 'z_prev': z_list, 'a_prev': a}
+
+            if lpz is not None:
+                ctc_prefix_score = [CTCPrefixScore(lpz[idx].numpy(), 0, self.eos, np) for idx in range(self.num_enc)]
+                hyp['ctc_state_prev'] = [ctc_prefix_score[idx].initial_state() for idx in range(self.num_enc)]
+                hyp['ctc_score_prev'] = [0.0 for idx in range(self.num_enc)]
+                if ctc_weight != 1.0:
+                    # pre-pruning based on attention scores
+                    ctc_beam = min(lpz[0].shape[-1], int(beam * CTC_SCORING_RATIO))
+                else:
+                    ctc_beam = lpz[0].shape[-1]
+            hyps = [hyp]
+            ended_hyps = []
+            init_hyp = hyp.copy()
+
 
         for i in six.moves.range(maxlen):
             logging.debug('position ' + str(i))
 
             hyps_best_kept = []
             for hyp in hyps:
-                vy.unsqueeze(1)
+                # vy.unsqueeze(1) # not inplace function
                 vy[0] = hyp['yseq'][i]
                 ey = self.embed(vy)           # utt list (1) x zdim
-                ey.unsqueeze(0)
-                att_c, att_w = self.att(h.unsqueeze(0), [h.size(0)], hyp['z_prev'][0], hyp['a_prev'])
+                # ey.unsqueeze(0) # not inplace function
+                # in multiencoder case, att_w = [att1, att2, att3 (stream attention)]
+
+                if self.num_enc == 1:
+                    att_c, att_w = self.att(h, [h.size(1)], hyp['z_prev'][0], hyp['a_prev'])
+                else:
+                    att_c, att_w = self.att(h, [[hh.shape[1]] for hh in h], hyp['z_prev'][0], hyp['a_prev'])
+
                 ey = torch.cat((ey, att_c), dim=1)   # utt(1) x (zdim + hdim)
                 z_list[0], c_list[0] = self.decoder[0](ey, (hyp['z_prev'][0], hyp['c_prev'][0]))
                 for l in six.moves.range(1, self.dlayers):
@@ -1764,8 +2792,7 @@ class Decoder(torch.nn.Module):
                 # get nbest local scores and their ids
                 local_att_scores = F.log_softmax(self.output(z_list[-1]), dim=1).data
                 if rnnlm:
-                    rnnlm_state, z_rnnlm = rnnlm.predictor(hyp['rnnlm_prev'], vy)
-                    local_lm_scores = F.log_softmax(z_rnnlm, dim=1).data
+                    rnnlm_state, local_lm_scores = rnnlm.predict(hyp['rnnlm_prev'], vy)
                     local_scores = local_att_scores + recog_args.lm_weight * local_lm_scores
                 else:
                     local_scores = local_att_scores
@@ -1773,13 +2800,24 @@ class Decoder(torch.nn.Module):
                 if lpz is not None:
                     local_best_scores, local_best_ids = torch.topk(
                         local_att_scores, ctc_beam, dim=1)
-                    ctc_scores, ctc_states = ctc_prefix_score(
-                        hyp['yseq'], local_best_ids[0], hyp['ctc_state_prev'])
-                    local_scores = \
-                        (1.0 - ctc_weight) * local_att_scores[:, local_best_ids[0]] \
-                        + ctc_weight * torch.from_numpy(ctc_scores - hyp['ctc_score_prev'])
+                    if self.num_enc == 1:
+                        ctc_scores, ctc_states = ctc_prefix_score(
+                            hyp['yseq'], local_best_ids[0], hyp['ctc_state_prev'])
+                        local_scores = \
+                            (1.0 - ctc_weight) * local_att_scores[:, local_best_ids[0]] \
+                            + ctc_weight * torch.from_numpy(ctc_scores - hyp['ctc_score_prev'])
+                    else:
+                        ctc_scores, ctc_states = zip(*[ctc_prefix_score[idx](
+                            hyp['yseq'], local_best_ids[0], hyp['ctc_state_prev'][idx]) for idx in range(
+                            self.num_enc)])  # ctc_scores=[score_stream1, score_stream2, ..., score_streamN], ctc_states = [state1, state2, ..., stateN] where stateN is beam x frame
+                        local_scores = \
+                            (1.0 - ctc_weight) * local_att_scores[:, local_best_ids[0]] \
+                            + ctc_weight * torch.from_numpy(
+                                np.mean(
+                                    np.stack([ctc_scores[idx] - hyp['ctc_score_prev'][idx] for idx in range(self.num_enc)]),
+                                    axis=0))
                     if rnnlm:
-                        local_scores += recog_args.lm_weight * local_lm_scores[:, local_best_ids]
+                        local_scores += recog_args.lm_weight * local_lm_scores[:, local_best_ids[0]]
                     local_best_scores, joint_best_ids = torch.topk(local_scores, beam, dim=1)
                     local_best_ids = local_best_ids[:, joint_best_ids[0]]
                 else:
@@ -1794,12 +2832,16 @@ class Decoder(torch.nn.Module):
                     new_hyp['score'] = hyp['score'] + local_best_scores[0, j]
                     new_hyp['yseq'] = [0] * (1 + len(hyp['yseq']))
                     new_hyp['yseq'][:len(hyp['yseq'])] = hyp['yseq']
-                    new_hyp['yseq'][len(hyp['yseq'])] = local_best_ids[0, j]
+                    new_hyp['yseq'][len(hyp['yseq'])] = int(local_best_ids[0, j])
                     if rnnlm:
                         new_hyp['rnnlm_prev'] = rnnlm_state
                     if lpz is not None:
-                        new_hyp['ctc_state_prev'] = ctc_states[joint_best_ids[0, j]]
-                        new_hyp['ctc_score_prev'] = ctc_scores[joint_best_ids[0, j]]
+                        if self.num_enc == 1:
+                            new_hyp['ctc_state_prev'] = ctc_states[joint_best_ids[0, j]]
+                            new_hyp['ctc_score_prev'] = ctc_scores[joint_best_ids[0, j]]
+                        else:
+                            new_hyp['ctc_state_prev'] = [ctc_states[idx][joint_best_ids[0, j]] for idx in range(self.num_enc)]
+                            new_hyp['ctc_score_prev'] = [ctc_scores[idx][joint_best_ids[0, j]] for idx in range(self.num_enc)]
                     # will be (2 x beam) hyps at most
                     hyps_best_kept.append(new_hyp)
 
@@ -1851,11 +2893,107 @@ class Decoder(torch.nn.Module):
 
         nbest_hyps = sorted(
             ended_hyps, key=lambda x: x['score'], reverse=True)[:min(len(ended_hyps), recog_args.nbest)]
+        if len(nbest_hyps) == 0:
+            nbest_hyps = [init_hyp]
         logging.info('total log probability: ' + str(nbest_hyps[0]['score']))
         logging.info('normalized log probability: ' + str(nbest_hyps[0]['score'] / len(nbest_hyps[0]['yseq'])))
 
         # remove sos
         return nbest_hyps
+
+    def calculate_all_attentions(self, hpad, hlen, ys):
+        '''Calculate all of attentions
+
+        :return: numpy array format attentions
+        '''
+        if self.num_enc == 1:
+            hpad = mask_by_length(hpad, hlen, 0)
+            hlen = list(map(int, hlen))
+
+            # initialization
+            c_list = [self.zero_state(hpad)]
+            z_list = [self.zero_state(hpad)]
+            for l in six.moves.range(1, self.dlayers):
+                c_list.append(self.zero_state(hpad))
+                z_list.append(self.zero_state(hpad))
+        else:
+            hpad = [mask_by_length(hpad[idx], hlen[idx], 0) for idx in range(self.num_enc)]
+            hlen = [list(map(int, hlen[idx])) for idx in range(self.num_enc)]
+
+            # initialization
+            c_list = [self.zero_state(hpad[0])]
+            z_list = [self.zero_state(hpad[0])]
+            for l in six.moves.range(1, self.dlayers):
+                c_list.append(self.zero_state(hpad[0]))
+                z_list.append(self.zero_state(hpad[0]))
+
+        att_w = None
+        att_ws = []
+        self.att.reset()  # reset pre-computation of h
+
+        self.loss = None
+        # prepare input and output word sequences with sos/eos IDs
+        eos = Variable(ys[0].data.new([self.eos]))
+        sos = Variable(ys[0].data.new([self.sos]))
+        ys_in = [torch.cat([sos, y], dim=0) for y in ys]
+        ys_out = [torch.cat([y, eos], dim=0) for y in ys]
+
+        # padding for ys with -1
+        # pys: utt x olen
+        pad_ys_in = pad_list(ys_in, self.eos)
+        pad_ys_out = pad_list(ys_out, self.ignore_id)
+
+        # get length info
+        olength = pad_ys_out.size(1)
+
+        # pre-computation of embedding
+        eys = self.embed(pad_ys_in)  # utt x olen x zdim
+
+        # loop for an output sequence
+        for i in six.moves.range(olength):
+            att_c, att_w = self.att(hpad, hlen, z_list[0], att_w)
+            ey = torch.cat((eys[:, i, :], att_c), dim=1)  # utt x (zdim + hdim)
+            z_list[0], c_list[0] = self.decoder[0](ey, (z_list[0], c_list[0]))
+            for l in six.moves.range(1, self.dlayers):
+                z_list[l], c_list[l] = self.decoder[l](
+                    z_list[l - 1], (z_list[l], c_list[l]))
+            att_ws.append(att_w)
+
+        # convert to numpy array with the shape (B, Lmax, Tmax)
+        if isinstance(self.att, AttLoc2D):
+            # att_ws => list of previous concate attentions
+            att_ws = torch.stack([aw[:, -1] for aw in att_ws], dim=1).data.cpu().numpy()
+        elif isinstance(self.att, (AttCov, AttCovLoc)):
+            # att_ws => list of list of previous attentions
+            att_ws = torch.stack([aw[-1] for aw in att_ws], dim=1).data.cpu().numpy()
+        elif isinstance(self.att, AttLocRec):
+            # att_ws => list of tuple of attention and hidden states
+            att_ws = torch.stack([aw[0] for aw in att_ws], dim=1).data.cpu().numpy()
+        elif isinstance(self.att, (AttMultiHeadDot, AttMultiHeadAdd, AttMultiHeadLoc, AttMultiHeadMultiResLoc)):
+            # att_ws => list of list of each head attetion
+            n_heads = len(att_ws[0])
+            att_ws_sorted_by_head = []
+            for h in six.moves.range(n_heads):
+                att_ws_head = torch.stack([aw[h] for aw in att_ws], dim=1)
+                att_ws_sorted_by_head += [att_ws_head]
+            att_ws = torch.stack(att_ws_sorted_by_head, dim=1).data.cpu().numpy()
+        # elif isinstance(self.att, (Enc2AttAdd, Enc2AttLoc)):
+        elif isinstance(self.att, (Enc2AttAdd, Enc2AttAddLinProj)):
+            # att_ws => list(len(odim)) of [[att1_l1, att2_l1, ...,attN_l1], att_l2]; N: numstreams
+            # list of [utt x (NumEnc+1) x T_max]
+            att_ws = [pad_list([a.transpose(0, 1) for a in aw[0]+ [aw[1]]], 0).transpose(0, 2).transpose(1, 2) for aw in att_ws]
+            # att_ws => utt x (NumEnc+1) x odim x T_max; T_max is the max length among all attention sets for all utterance
+            att_ws = torch.stack(att_ws, dim=2).data.cpu().numpy()
+        elif isinstance(self.att, Enc2AttAddFrmLinProj):
+            # att_ws => list(len(odim)) of [[att1_l1, att2_l1, ...,attN_l1], [att1_l2_stream, att2_l2_stream, ...,attN_l2_stream], att_l2]; N: numstreams
+            # list of [utt x (2*NumEnc+1) x T_max]
+            att_ws = [pad_list([a.transpose(0, 1) for a in aw[0]+aw[1]+[aw[2]]], 0).transpose(0, 2).transpose(1, 2) for aw in att_ws]
+            # att_ws => utt x (2*NumEnc+1) x odim x T_max; T_max is the max length among all attention sets for all utterance
+            att_ws = torch.stack(att_ws, dim=2).data.cpu().numpy()
+        else:
+            # att_ws => list of attetions
+            att_ws = torch.stack(att_ws, dim=1).data.cpu().numpy()
+        return att_ws
 
 
 # ------------- Encoder Network ----------------------------------------------------------------------------------------
@@ -1875,9 +3013,10 @@ class Encoder(torch.nn.Module):
 
     '''
 
-    def __init__(self, etype, idim, elayers, eunits, eprojs, subsample, dropout, in_channel=1):
+    def __init__(self, etype, idim, elayers, eunits, eprojs, subsample, dropout, in_channel=1, num_enc=1):
         super(Encoder, self).__init__()
 
+        # blstm
         if etype == 'blstm':
             self.enc1 = BLSTM(idim, elayers, eunits, eprojs, dropout)
             logging.info('BLSTM without projection for encoder')
@@ -1885,17 +3024,290 @@ class Encoder(torch.nn.Module):
             self.enc1 = BLSTMP(idim, elayers, eunits,
                                eprojs, subsample, dropout)
             logging.info('BLSTM with every-layer projection for encoder')
+        elif etype == 'blstmss':
+            self.enc1 = BLSTMSS(idim, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('BLSTM with subsampling without every-layer projection for encoder')
+        elif etype == 'blstmpbn':
+            self.enc1 = BLSTMPBN(idim, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('BLSTM with every-layer projection for encoder with batchnorm')
+
+        # vgg
+        elif etype == 'vgg':
+            self.enc1 = VGGOnly(idim=idim, eprojs=eprojs, in_channels=in_channel, )
+            logging.info('Use CNN-VGG for encoder')
+        elif etype == 'vggblstm':
+            self.enc1 = VGG(in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-VGG + BLSTM for encoder')
+        elif etype == 'vgg8blstm':
+            self.enc1 = VGG8(in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel, mode='vgg8', out_channel=256),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-VGG8 + BLSTM for encoder')
         elif etype == 'vggblstmp':
-            self.enc1 = VGG2L(in_channel)
-            self.enc2 = BLSTMP(_get_vgg2l_odim(idim, in_channel=in_channel),
+            self.enc1 = VGG(in_channels=in_channel)
+            self.enc2 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel),
                                elayers, eunits, eprojs,
                                subsample, dropout)
             logging.info('Use CNN-VGG + BLSTMP for encoder')
-        elif etype == 'vggblstm':
-            self.enc1 = VGG2L(in_channel)
+        elif etype == 'vggbnblstm':
+            self.enc1 = VGG(batch_norm=True, in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-VGG-BN + BLSTM for encoder')
+        elif etype == 'vggbnblstmp':
+            self.enc1 = VGG(batch_norm=True, in_channels=in_channel)
+            self.enc2 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                               elayers, eunits, eprojs,
+                               subsample, dropout)
+            logging.info('Use CNN-VGG-BN + BLSTMP for encoder')
+        elif etype == 'vggsdpblstm':
+            self.enc1 = VGG(spatial_dp=True, in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-VGG-SpatialDP + BLSTM for encoder')
+        elif etype == 'vggsdpblstmp':
+            self.enc1 = VGG(spatial_dp=True, in_channels=in_channel)
+            self.enc2 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                               elayers, eunits, eprojs,
+                               subsample, dropout)
+            logging.info('Use CNN-VGG-SpatialDP + BLSTMP for encoder')
+        elif etype == 'vggnbblstm':
+            self.enc1 = VGG(bias=False, in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-VGG-nobias + BLSTM for encoder')
+        elif etype == 'vggnbblstmp':
+            self.enc1 = VGG(bias=False, in_channels=in_channel)
+            self.enc2 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                               elayers, eunits, eprojs,
+                               subsample, dropout)
+            logging.info('Use CNN-VGG-nobias + BLSTMP for encoder')
+        elif etype == 'vggceilblstm':
+            self.enc1 = VGG(ceil_mode=True, in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel, ceil_mode=True),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-VGG-ceil + BLSTM for encoder')
+        elif etype == 'vggceilblstmp':
+            self.enc1 = VGG(ceil_mode=True, in_channels=in_channel)
+            self.enc2 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel, ceil_mode=True),
+                               elayers, eunits, eprojs,
+                               subsample, dropout)
+            logging.info('Use CNN-VGG-ceil + BLSTMP for encoder')
+        elif etype == 'vggsjblstm':
+            self.enc1 = VGG2L(in_channel=in_channel)
             self.enc2 = BLSTM(_get_vgg2l_odim(idim, in_channel=in_channel),
                               elayers, eunits, eprojs, dropout)
             logging.info('Use CNN-VGG + BLSTM for encoder')
+        elif etype == 'vggdil2blstm':
+            self.enc1 = VGG(in_channels=in_channel, dilation=2)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel, dilation=2),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-VGG with dilation 2 + BLSTM for encoder')
+        elif etype == 'vggresblstm':
+            self.enc1 = VGGRes(in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-VGG followed by one resnet + BLSTM for encoder')
+        elif etype == 'vggresdil2blstm':
+            self.enc1 = VGGRes(in_channels=in_channel, dilation=2)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel, dilation=2),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-VGG followed by one reset with dilation 2 + BLSTM for encoder')
+
+        # resnet
+        elif etype == 'resblstm':
+            self.enc1 = VGG(resnet=True, in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-Res + BLSTM for encoder')
+        elif etype == 'resblstmp':
+            self.enc1 = VGG(resnet=True, in_channels=in_channel)
+            self.enc2 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                               elayers, eunits, eprojs,
+                               subsample, dropout)
+            logging.info('Use CNN-Res + BLSTMP for encoder')
+        elif etype == 'resbnblstm':
+            self.enc1 = VGG(resnet=True, batch_norm=True, in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-Res-BN + BLSTM for encoder')
+        elif etype == 'resbnblstmp':
+            self.enc1 = VGG(resnet=True, batch_norm=True, in_channels=in_channel)
+            self.enc2 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                               elayers, eunits, eprojs,
+                               subsample, dropout)
+            logging.info('Use CNN-Res-BN + BLSTMP for encoder')
+        elif etype == 'ressdpblstm':
+            self.enc1 = VGG(resnet=True, spatial_dp=True, in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-Res-SpatialDP + BLSTM for encoder')
+        elif etype == 'ressdpblstmp':
+            self.enc1 = VGG(resnet=True, spatial_dp=True, in_channels=in_channel)
+            self.enc2 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                               elayers, eunits, eprojs,
+                               subsample, dropout)
+            logging.info('Use CNN-Res-SpatialDP + BLSTMP for encoder')
+        elif etype == 'resnbblstm':
+            self.enc1 = VGG(resnet=True, bias=False, in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-Res-nobias + BLSTM for encoder')
+        elif etype == 'resnbblstmp':
+            self.enc1 = VGG(resnet=True, bias=False, in_channels=in_channel)
+            self.enc2 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                               elayers, eunits, eprojs,
+                               subsample, dropout)
+            logging.info('Use CNN-Res-nobias + BLSTMP for encoder')
+        elif etype == 'resceilblstm':
+            self.enc1 = VGG(resnet=True, ceil_mode=True, in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel, ceil_mode=True),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-Res-ceil + BLSTM for encoder')
+        elif etype == 'resceilblstmp':
+            self.enc1 = VGG(resnet=True, ceil_mode=True, in_channels=in_channel, )
+            self.enc2 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel, ceil_mode=True),
+                               elayers, eunits, eprojs,
+                               subsample, dropout)
+            logging.info('Use CNN-Res-ceil + BLSTMP for encoder')
+        elif etype == 'resorigblstm':
+            self.enc1 = ResNetOrig(in_channels=in_channel)
+            self.enc2 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel, mode='resnetorig'),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('Use CNN-Res-Orig + BLSTM for encoder')
+
+
+        # RCNN
+        elif etype == 'rcnn':
+            self.enc1 = RCNN(idim=idim, eprojs=eprojs, block=BasicBlock_BnReluConv, inplanes=in_channel, flag_bn = True, flag_relu = True, flag_dp = False)
+            logging.info('Use RCNN for encoder')
+        elif etype == 'rcnnNObn':
+            self.enc1 = RCNN(idim=idim, eprojs=eprojs, block=BasicBlock_BnReluConv, inplanes=in_channel, flag_bn = False, flag_relu = True, flag_dp = False)
+            logging.info('Use RCNN without BatchNorm for encoder')
+        elif etype == 'rcnnDp':
+            self.enc1 = RCNN(idim=idim, eprojs=eprojs, block=BasicBlock_BnReluConv, inplanes=in_channel, flag_bn = True, flag_relu = True, flag_dp = True)
+            logging.info('Use RCNN with dropout for encoder')
+        elif etype == 'rcnnDpNObn':
+            self.enc1 = RCNN(idim=idim, eprojs=eprojs, block=BasicBlock_BnReluConv, inplanes=in_channel, flag_bn = False, flag_relu = True, flag_dp = True)
+            logging.info('Use RCNN with dropout without BatchNorm for encoder')
+
+
+        # multi-encoder, multi-band
+        elif etype == 'multiVggblstmBlstmp':
+            self.enc11 = VGG(in_channels=in_channel)
+            self.enc12 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            self.enc21 = BLSTMP(idim, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('Multi-Encoder: VGGBLSTM, BLSTMP for encoders')
+        elif etype == 'multiVggblstmpBlstmp':
+            self.enc11 = VGG(in_channels=in_channel)
+            self.enc12 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                               elayers, eunits, eprojs,
+                               subsample, dropout)
+            self.enc21 = BLSTMP(idim, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('Multi-Encoder: VGGBLSTMP, BLSTMP for encoders')
+
+        elif etype == 'multiVggblstmBlstmpFixed4':
+            self.enc11 = VGG(in_channels=in_channel)
+            self.enc12 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                               elayers, eunits, eprojs, dropout)
+            self.enc21 = BLSTMP(idim, elayers=4, cdim=320,
+                                hdim=320, subsample=np.array([1,1,1,1,1]).astype(int), dropout=0.0)
+            logging.info('Multi-Encoder: VGGBLSTM, BLSTMP for encoders')
+        elif etype == 'multiVggblstmpBlstmpFixed4':
+            self.enc11 = VGG(in_channels=in_channel)
+            self.enc12 = BLSTMP(_get_maxpooling2_odim(idim, in_channel=in_channel),
+                                elayers, eunits, eprojs,
+                                subsample, dropout)
+            self.enc21 = BLSTMP(idim, elayers=4, cdim=320,
+                                hdim=320, subsample=np.array([1,1,1,1,1]).astype(int), dropout=0.0)
+            logging.info('Multi-Encoder: VGGBLSTMP, BLSTMP for encoders')
+
+
+
+        elif etype == 'multiVgg8blstmBlstmp':
+            self.enc11 = VGG8(in_channels=in_channel)
+            self.enc12 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel, mode='vgg8', out_channel=256),
+                              elayers, eunits, eprojs, dropout)
+            self.enc21 = BLSTMP(idim, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('Multi-Encoder: VGG8BLSTM, BLSTMP for encoders')
+
+        elif etype == 'multiVggdil2blstmBlstmp':
+            self.enc11 = VGG(in_channels=in_channel, dilation=2)
+            self.enc12 = BLSTM(_get_maxpooling2_odim(idim, in_channel=in_channel, dilation=2),
+                              elayers, eunits, eprojs, dropout)
+            self.enc21 = BLSTMP(idim, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('Multi-Encoder: VGGBLSTM+dilation2, BLSTMP for encoders')
+
+
+        elif etype == 'multiBlstmpBlstmp4':
+            subsample1 = np.array([1,1,1,1,1]).astype(int)
+            subsample2 = np.array([1,2,2,1,1]).astype(int)
+            self.enc1 = BLSTMP(idim, elayers, eunits,
+                               eprojs, subsample1, dropout)
+            self.enc2 = BLSTMP(idim, elayers, eunits,
+                               eprojs, subsample2, dropout)
+            logging.info('Use BLSTMP + BLSTMP(/4) for encoder')
+
+        elif etype == 'multiBandBlstmpBlstmp':
+            self.enc1 = BLSTMP(43, elayers, eunits,
+                               eprojs, subsample, dropout) # 40+3 pitch
+
+            self.enc2 = BLSTMP(43, elayers, eunits,
+                               eprojs, subsample, dropout) # 40+3 pitch
+            logging.info('Multi-Band: BLSTMP(40LF+3Pitch), BLSTMP(40HF+3Pitch) for encoders')
+        elif etype == 'lowBandBlstmp':
+            self.enc1 = BLSTMP(43, elayers, eunits,
+                               eprojs, subsample, dropout) # 40+3 pitch
+            logging.info('Low-Band: BLSTMP(40LF+3Pitch) for encoders')
+        elif etype == 'highBandBlstmp':
+            self.enc1 = BLSTMP(43, elayers, eunits,
+                               eprojs, subsample, dropout) # 40+3 pitch
+            logging.info('High-Band: BLSTMP(40HF+3Pitch) for encoders')
+
+        # ami
+        elif etype == 'amiCH1BlstmpCH2Blstmp':
+            self.enc1 = BLSTMP(83, elayers, eunits,
+                               eprojs, subsample, dropout)  # 40+3 pitch
+
+            self.enc2 = BLSTMP(83, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('AMI: BLSTMP(CH1), BLSTMP(CH2) for encoders')
+        elif etype == 'amiCH1Blstmp':
+            self.enc1 = BLSTMP(83, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('AMI: BLSTMP(CH1) for encoders')
+        elif etype == 'amiCH2Blstmp':
+            self.enc1 = BLSTMP(83, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('AMI: BLSTMP(CH2) for encoders')
+
+        elif etype == 'amiCH1VggblstmCH2Vggblstm':
+            self.enc11 = VGG(in_channels=in_channel)
+            self.enc12 = BLSTM(_get_maxpooling2_odim(83, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            self.enc21 = VGG(in_channels=in_channel)
+            self.enc22 = BLSTM(_get_maxpooling2_odim(83, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('AMI: VGGBLSTM(CH1), VGGBLSTM(CH2) for encoders')
+        elif etype == 'amiCH1Vggblstm':
+            self.enc11 = VGG(in_channels=in_channel)
+            self.enc12 = BLSTM(_get_maxpooling2_odim(83, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('AMI: VGGBLSTM(CH1) for encoders')
+        elif etype == 'amiCH2Vggblstm':
+            self.enc21 = VGG(in_channels=in_channel)
+            self.enc22 = BLSTM(_get_maxpooling2_odim(83, in_channel=in_channel),
+                              elayers, eunits, eprojs, dropout)
+            logging.info('AMI: VGGBLSTM(CH2) for encoders')
         else:
             logging.error(
                 "Error: need to specify an appropriate encoder archtecture")
@@ -1910,16 +3322,97 @@ class Encoder(torch.nn.Module):
         :param ilens:
         :return:
         '''
-        if self.etype == 'blstm':
+        if self.etype in ['blstm','blstmp', 'blstmss','blstmpbn','vgg','rcnn','rcnnNObn','rcnnDp','rcnnDpNObn']:
             xs, ilens = self.enc1(xs, ilens)
-        elif self.etype == 'blstmp':
-            xs, ilens = self.enc1(xs, ilens)
-        elif self.etype == 'vggblstmp':
+        elif self.etype in ['vggblstm','vggblstmp','vggbnblstm','vggbnblstmp','vggceilblstm','vggceilblstmp','vggnbblstm','vggnbblstmp', 'vggsjblstm', 'vggresblstm', 'vggdil2blstm', 'vggresdil2blstm','vgg8blstm']:
             xs, ilens = self.enc1(xs, ilens)
             xs, ilens = self.enc2(xs, ilens)
-        elif self.etype == 'vggblstm':
+        elif self.etype in ['resblstm', 'resblstmp', 'resbnblstm', 'resbnblstmp', 'resceilblstm', 'resceilblstmp',
+                                'resnbblstm', 'resnbblstmp', 'resorigblstm','resorigblstm']:
             xs, ilens = self.enc1(xs, ilens)
             xs, ilens = self.enc2(xs, ilens)
+
+        elif self.etype in ['multiVggblstmBlstmp', 'multiVggdil2blstmBlstmp','multiVgg8blstmBlstmp','multiVggblstmpBlstmp','multiVggblstmpBlstmpFixed4','multiVggblstmBlstmpFixed4']:
+
+
+            # if self.addGaussNoise:    # TODO only on gpu
+            #
+            #     # add noise to stream 1
+            #     torch.normal(mean=torch.arange(1, 11), std=torch.arange(1, 0, -0.1))
+            #     noise = np.random.normal(loc=mean, scale=stddev, size=np.shape(input_array))
+            #     output_tensor = torch.from_numpy(out)
+            #
+            #     noise =
+            #     xs:
+
+            xs1, ilens1 = self.enc11(xs, ilens)
+            xs1, ilens1 = self.enc12(xs1, ilens1)
+            xs2, ilens2 = self.enc21(xs, ilens)
+            return (xs1, xs2), (ilens1, ilens2)
+        elif self.etype in ['multiBlstmpBlstmp4']:
+            xs1, ilens1 = self.enc1(xs, ilens)
+            xs2, ilens2 = self.enc2(xs, ilens)
+            return (xs1, xs2), (ilens1, ilens2)
+        elif self.etype in ['multiBandBlstmpBlstmp']:
+            # xs: utt x frame x dim(83)
+            dims1 = list(range(40))+list(range(80,83)) # low frequency + 3 pitch
+            dims2 = list(range(40,80))+list(range(80,83)) # high frequency + 3 pitch
+            xs1, ilens1 = self.enc1(xs[:,:,dims1], ilens)
+            xs2, ilens2 = self.enc2(xs[:,:,dims2], ilens)
+            return (xs1, xs2), (ilens1, ilens2)
+        elif self.etype in ['highBandBlstmp']:
+            # xs: utt x frame x dim(83)
+            dims2 = list(range(40,80))+list(range(80,83)) # high frequency + 3 pitch
+            xs2, ilens2 = self.enc1(xs[:,:,dims2], ilens)
+            return xs2, ilens2
+        elif self.etype in ['lowBandBlstmp']:
+            # xs: utt x frame x dim(83)
+            dims1 = list(range(40))+list(range(80,83)) # low frequency + 3 pitch
+            xs1, ilens1 = self.enc1(xs[:,:,dims1], ilens)
+            return xs1, ilens1
+        elif self.etype in ['amiCH1BlstmpCH2Blstmp']:
+            # xs: utt x frame x dim(83)
+            dims1 = list(range(83)) # low frequency + 3 pitch
+            dims2 = list(range(83,83*2)) # high frequency + 3 pitch
+            xs1, ilens1 = self.enc1(xs[:,:,dims1], ilens)
+            xs2, ilens2 = self.enc2(xs[:,:,dims2], ilens)
+            return (xs1, xs2), (ilens1, ilens2)
+        elif self.etype in ['amiCH1Blstmp']:
+            # xs: utt x frame x dim(83)
+            dims1 = list(range(83)) # high frequency + 3 pitch
+            xs1, ilens1 = self.enc1(xs[:,:,dims1], ilens)
+            return xs1, ilens1
+        elif self.etype in ['amiCH2Blstmp']:
+            # xs: utt x frame x dim(83)
+            dims2 = list(range(83,83*2)) # low frequency + 3 pitch
+            xs2, ilens2 = self.enc1(xs[:,:,dims2], ilens)
+            return xs2, ilens2
+
+        elif self.etype in ['amiCH1VggblstmCH2Vggblstm']:
+            # xs: utt x frame x dim(83)
+            dims1 = list(range(83)) # low frequency + 3 pitch
+            dims2 = list(range(83,83*2)) # high frequency + 3 pitch
+
+            xs1, ilens1 = self.enc11(xs[:,:,dims1], ilens)
+            xs1, ilens1 = self.enc12(xs1, ilens1)
+
+            xs2, ilens2 = self.enc21(xs[:,:,dims2], ilens)
+            xs2, ilens2 = self.enc22(xs2, ilens2)
+            return (xs1, xs2), (ilens1, ilens2)
+
+        elif self.etype in ['amiCH1Vggblstm']:
+            # xs: utt x frame x dim(83)
+            dims1 = list(range(83)) # high frequency + 3 pitch
+            xs1, ilens1 = self.enc11(xs[:,:,dims1], ilens)
+            xs1, ilens1 = self.enc12(xs1, ilens1)
+            return xs1, ilens1
+
+        elif self.etype in ['amiCH2Vggblstm']:
+            # xs: utt x frame x dim(83)
+            dims2 = list(range(83,83*2)) # low frequency + 3 pitch
+            xs2, ilens2 = self.enc21(xs[:,:,dims2], ilens)
+            xs2, ilens2 = self.enc22(xs2, ilens2)
+            return xs2, ilens2
         else:
             logging.error(
                 "Error: need to specify an appropriate encoder archtecture")
@@ -1956,6 +3449,54 @@ class BLSTMP(torch.nn.Module):
         for layer in six.moves.range(self.elayers):
             xpack = pack_padded_sequence(xpad, ilens, batch_first=True)
             bilstm = getattr(self, 'bilstm' + str(layer))
+            if torch_is_old:
+                # pytorch 0.4.x does not support flatten_parameters() for multiple GPUs
+                bilstm.flatten_parameters()
+            ys, (hy, cy) = bilstm(xpack)
+            # ys: utt list of frame x cdim x 2 (2: means bidirectional)
+            ypad, ilens = pad_packed_sequence(ys, batch_first=True)
+            sub = self.subsample[layer + 1]
+            if sub > 1:
+                ypad = ypad[:, ::sub]
+                ilens = [int(i + 1) // sub for i in ilens]
+            # (sum _utt frame_utt) x dim
+            projected = getattr(self, 'bt' + str(layer)
+                                )(ypad.contiguous().view(-1, ypad.size(2)))
+            xpad = torch.tanh(projected.view(ypad.size(0), ypad.size(1), -1))
+            del hy, cy
+
+        return xpad, ilens  # x: utt list of frame x dim
+
+class BLSTMPBN(torch.nn.Module):
+    def __init__(self, idim, elayers, cdim, hdim, subsample, dropout):
+        super(BLSTMPBN, self).__init__()
+        for i in six.moves.range(elayers):
+            if i == 0:
+                inputdim = idim
+            else:
+                inputdim = hdim
+            setattr(self, "bilstm%d" % i, torch.nn.LSTM(inputdim, cdim, dropout=dropout,
+                                                        num_layers=1, bidirectional=True, batch_first=True))
+            # bottleneck layer to merge
+            setattr(self, "bt%d" % i, torch.nn.Linear(2 * cdim, hdim))
+
+            setattr(self, "batchnorm%d" % i, torch.nn.BatchNorm1d(hdim))
+
+        self.elayers = elayers
+        self.cdim = cdim
+        self.subsample = subsample
+
+    def forward(self, xpad, ilens):
+        '''BLSTMP forward
+
+        :param xs:
+        :param ilens:
+        :return:
+        '''
+        # logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+        for layer in six.moves.range(self.elayers):
+            xpack = pack_padded_sequence(xpad, ilens, batch_first=True)
+            bilstm = getattr(self, 'bilstm' + str(layer))
             bilstm.flatten_parameters()
             ys, (hy, cy) = bilstm(xpack)
             # ys: utt list of frame x cdim x 2 (2: means bidirectional)
@@ -1965,13 +3506,60 @@ class BLSTMP(torch.nn.Module):
                 ypad = ypad[:, ::sub]
                 ilens = [(i + 1) // sub for i in ilens]
             # (sum _utt frame_utt) x dim
-            projected = getattr(self, 'bt' + str(layer)
-                                )(ypad.contiguous().view(-1, ypad.size(2)))
+            projected = getattr(self, 'batchnorm' + str(layer)
+                                )((getattr(self, 'bt' + str(layer)
+                                )(ypad.contiguous().view(-1, ypad.size(2)))))
             xpad = torch.tanh(projected.view(ypad.size(0), ypad.size(1), -1))
             del hy, cy
 
         return xpad, ilens  # x: utt list of frame x dim
 
+class BLSTMSS(torch.nn.Module):
+    def __init__(self, idim, elayers, cdim, hdim, subsample, dropout):
+        super(BLSTMSS, self).__init__()
+        for i in six.moves.range(elayers):
+            if i == 0:
+                inputdim = idim
+            else:
+                inputdim = cdim *2
+            setattr(self, "bilstm%d" % i, torch.nn.LSTM(inputdim, cdim, dropout=dropout,
+                                                        num_layers=1, bidirectional=True, batch_first=True))
+
+        self.elayers = elayers
+        self.cdim = cdim
+        self.subsample = subsample
+
+        self.l_last = torch.nn.Linear(cdim * 2, hdim)
+
+    def forward(self, xpad, ilens):
+        '''BLSTMSS forward # TODO: memeory issue
+        
+
+        :param xs:
+        :param ilens:
+        :return:
+        '''
+        # logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+        for layer in six.moves.range(self.elayers):
+            xpack = pack_padded_sequence(xpad, ilens, batch_first=True)
+            bilstm = getattr(self, 'bilstm' + str(layer))
+            bilstm.flatten_parameters()
+            ys, (hy, cy) = bilstm(xpack)
+            del hy, cy
+            # ys: utt list of frame x cdim x 2 (2: means bidirectional)
+            ypad, ilens = pad_packed_sequence(ys, batch_first=True)
+            sub = self.subsample[layer + 1]
+            if sub > 1:
+                ypad = ypad[:, ::sub]
+                ilens = [(i + 1) // sub for i in ilens]
+            # (sum _utt frame_utt) x dim
+            xpad = ypad.contiguous().view(ypad.size(0), ypad.size(1), -1)
+
+        # (sum _utt frame_utt) x dim
+        projected = torch.tanh(self.l_last(
+            xpad.contiguous().view(-1, xpad.size(2))))
+        xpad = projected.view(xpad.size(0), xpad.size(1), -1)
+        return xpad, ilens  # x: utt list of frame x dim
 
 class BLSTM(torch.nn.Module):
     def __init__(self, idim, elayers, cdim, hdim, dropout):
@@ -2024,7 +3612,7 @@ class VGG2L(torch.nn.Module):
         # xs = F.pad_sequence(xs)
 
         # x: utt x 1 (input channel num) x frame x dim
-        xs = xs.view(xs.size(0), xs.size(1), self.in_channel,
+        xs = xs.contiguous().view(xs.size(0), xs.size(1), self.in_channel,
                      xs.size(2) // self.in_channel).transpose(1, 2)
 
         # NOTE: max_pool1d ?
@@ -2048,4 +3636,590 @@ class VGG2L(torch.nn.Module):
             xs.size(0), xs.size(1), xs.size(2) * xs.size(3))
         xs = [xs[i, :ilens[i]] for i in range(len(ilens))]
         xs = pad_list(xs, 0.0)
+        return xs, ilens
+
+######################## Reimplementation of CNN part (Ruizhi)
+
+class ConvBasicBlock(torch.nn.Module):
+    """convolution followed by optional batchnorm, nonlinear, spatialdropout, maxpooling"""
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=True, nonlinear=False, batch_norm=False, spatial_dp=False, maxpooling=False, maxpool_kernel_size=3, maxpool_stride=2, maxpool_padding=1, maxpool_ceil_mode=False, inplace=True, dilation=1):
+        super(ConvBasicBlock, self).__init__()
+        self.conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride,
+                     padding=padding, bias=bias, dilation=dilation)
+        # todo see performace diff with/without eval() in dp and bn case
+
+
+        if batch_norm: self.batchnorm = torch.nn.BatchNorm2d(out_channels)
+        if nonlinear: self.relu = torch.nn.ReLU(inplace=inplace)
+        if spatial_dp: self.sdp = torch.nn.Dropout2d() # spatial dropout
+        if maxpooling: self.maxpool = torch.nn.MaxPool2d(kernel_size=maxpool_kernel_size, stride=maxpool_stride,
+                                          padding=maxpool_padding, ceil_mode=maxpool_ceil_mode)
+
+        self.batch_norm = batch_norm
+        self.nonlinear = nonlinear
+        self.spatial_dp = spatial_dp
+        self.maxpooling = maxpooling
+
+    def forward(self, x):
+        out = self.conv(x)
+        if self.batch_norm: out = self.batchnorm(out)
+        if self.nonlinear: out = self.relu(out)
+        if self.spatial_dp: out = self.sdp(out)
+        if self.maxpooling: out = self.maxpool(out)
+        return out
+
+class CNNBasicBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, batch_norm=False, spatial_dp=False, resnet=False, bias=False, dilation=1):
+        super(CNNBasicBlock, self).__init__()
+
+        # residual: conv3*3 --> (spatial_dp) --> (batchnorm) --> relu --> cov3*3 --> (spatial_dp) --> (batchnorm)
+        # shortcut: conv1*1 --> (spatial_dp) --> (batchnorm)  (optional for resnet)
+        # out: relu(residual + [shortcut])
+
+        self.conv1 = ConvBasicBlock(in_channels, out_channels, 3, stride, dilation, bias, True, batch_norm, spatial_dp, dilation=dilation)
+        self.conv2 = ConvBasicBlock(out_channels, out_channels, 3, 1, dilation, bias, False, batch_norm, spatial_dp, dilation=dilation)
+        self.relu = torch.nn.ReLU(inplace=True)
+        if (in_channels != out_channels or stride != 1) and resnet:
+            self.downsample = ConvBasicBlock(in_channels, out_channels, 1, stride, 0, bias, False, batch_norm, spatial_dp)
+            self.downsampling = True
+        else:
+            self.downsampling = False
+        self.resnet=resnet
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.conv2(out)
+
+        if self.downsampling:
+            residual = self.downsample(residual)
+
+        if self.resnet:
+            out += residual
+        out = self.relu(out)
+        return out
+
+class VGG(torch.nn.Module):
+
+    # default is vgg
+    # VGG:  Vgg()
+    # add Residual connection: (bias=False, resnet=True)
+
+    def __init__(self, batch_norm=False, spatial_dp=False, ceil_mode=False, in_channels=1, bias=True, resnet=False, dilation=1):
+        super(VGG, self).__init__()
+
+        # self.conv0 = ConvBasicBlock(in_channels, 16, 1, 1, 0, False, True, batch_norm, spatial_dp)
+        self.resblock1 = CNNBasicBlock(in_channels, 64, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=resnet, bias=bias, dilation=dilation)
+        self.maxpool1 = torch.nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=ceil_mode)
+
+        self.resblock2 = CNNBasicBlock(64, 128, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=resnet, bias=bias, dilation=dilation)
+        self.maxpool2 = torch.nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=ceil_mode)
+        self.in_channels = in_channels
+        self.ceil_mode = ceil_mode
+        self.dilation = dilation
+
+
+    def forward(self, xs, ilens):
+        logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+
+        # xs: input: utt x frame x dim
+        # xs: output: utt x 1 (input channel num) x frame x dim
+        xs = xs.contiguous().view(xs.size(0), xs.size(1), self.in_channels, xs.size(2) // self.in_channels).transpose(1, 2)
+
+        # xs = self.conv0(xs)
+        xs = self.resblock1(xs)
+        xs = self.maxpool1(xs)
+        xs = self.resblock2(xs)
+        xs = self.maxpool2(xs)
+
+        # change ilens accordingly
+        # in maxpooling layer: stride(2), padding(0), kernel(2)
+
+
+        fnc = np.ceil if self.ceil_mode else np.floor
+
+        # s, p, k = [2, 0, 2]
+        # ilens = np.array(
+        #     fnc(((np.array(ilens, dtype=np.float32)+2*p-k)/s)+1), dtype=np.int64)
+        # ilens = np.array(
+        #     fnc(((np.array(ilens, dtype=np.float32)+2*p-k)/s)+1), dtype=np.int64).tolist()
+
+
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [2, 0, 2];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - k) / s) + 1), dtype=np.int64)
+
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [2, 0, 2];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - k) / s) + 1), dtype=np.int64).tolist()
+
+        # x: utt_list of frame (remove zeropaded frames) x (input channel num x dim)
+        xs = xs.transpose(1, 2)
+
+        xs = xs.contiguous().view(
+            xs.size(0), xs.size(1), xs.size(2) * xs.size(3))
+
+        xs = [xs[i, :ilens[i]] for i in range(len(ilens))]
+        xs = pad_list(xs, 0.0)
+
+        return xs, ilens
+
+class VGG8(torch.nn.Module):
+
+    # default is vgg
+    # VGG:  Vgg() first 8 layers of vgg
+    # add Residual connection: (bias=False, resnet=True)
+
+    def __init__(self, batch_norm=False, spatial_dp=False, ceil_mode=False, in_channels=1, bias=True, resnet=False, dilation=1):
+        super(VGG8, self).__init__()
+
+        # self.conv0 = ConvBasicBlock(in_channels, 16, 1, 1, 0, False, True, batch_norm, spatial_dp)
+        self.resblock1 = CNNBasicBlock(in_channels, 64, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=resnet, bias=bias, dilation=dilation)
+        self.maxpool1 = torch.nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=ceil_mode)
+
+        self.resblock2 = CNNBasicBlock(64, 128, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=resnet, bias=bias, dilation=dilation)
+        self.maxpool2 = torch.nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=ceil_mode)
+        self.resblock3 = CNNBasicBlock(128, 256, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=resnet, bias=bias, dilation=dilation)
+        self.resblock4 = CNNBasicBlock(256, 256, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=resnet, bias=bias, dilation=dilation)
+
+        self.in_channels = in_channels
+        self.ceil_mode = ceil_mode
+        self.dilation = dilation
+
+
+    def forward(self, xs, ilens):
+        logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+
+        # xs: input: utt x frame x dim
+        # xs: output: utt x 1 (input channel num) x frame x dim
+        xs = xs.contiguous().view(xs.size(0), xs.size(1), self.in_channels, xs.size(2) // self.in_channels).transpose(1, 2)
+
+        # xs = self.conv0(xs)
+        xs = self.resblock1(xs)
+        xs = self.maxpool1(xs)
+        xs = self.resblock2(xs)
+        xs = self.maxpool2(xs)
+        xs = self.resblock3(xs)
+        xs = self.resblock4(xs)
+
+        # change ilens accordingly
+        # in maxpooling layer: stride(2), padding(0), kernel(2)
+
+        fnc = np.ceil if self.ceil_mode else np.floor
+
+        # resblock 1 + maxpooling
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [2, 0, 2];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - k) / s) + 1), dtype=np.int64)
+
+        # resblock 2 + maxpooling
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [2, 0, 2];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - k) / s) + 1), dtype=np.int64)
+
+
+        # resblock 3
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+
+        # resblock 4
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64).tolist()
+
+
+
+
+        # x: utt_list of frame (remove zeropaded frames) x (input channel num x dim)
+        xs = xs.transpose(1, 2)
+
+        xs = xs.contiguous().view(
+            xs.size(0), xs.size(1), xs.size(2) * xs.size(3))
+
+        xs = [xs[i, :ilens[i]] for i in range(len(ilens))]
+        xs = pad_list(xs, 0.0)
+
+        return xs, ilens
+
+
+class VGGRes(torch.nn.Module):
+
+    # default is 2 layer vgg followed by 1 layer resnet
+    # VGGRes:  Vgg()
+    # add Residual connection: (bias=False, resnet=True)
+
+    def __init__(self, batch_norm=False, spatial_dp=False, ceil_mode=False, in_channels=1, bias=True, resnet=False, dilation=1):
+        super(VGGRes, self).__init__()
+
+        # self.conv0 = ConvBasicBlock(in_channels, 16, 1, 1, 0, False, True, batch_norm, spatial_dp)
+        self.resblock1 = CNNBasicBlock(in_channels, 64, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=resnet, bias=bias, dilation=dilation)
+        self.maxpool1 = torch.nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=ceil_mode)
+
+        self.resblock2 = CNNBasicBlock(64, 128, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=resnet, bias=bias, dilation=dilation)
+        self.resblock3 = CNNBasicBlock(128, 128, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=True, bias=False)
+
+        self.maxpool2 = torch.nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=ceil_mode)
+        self.in_channels = in_channels
+        self.ceil_mode = ceil_mode
+        self.dilation = dilation
+
+    def forward(self, xs, ilens):
+        logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+
+        # xs: input: utt x frame x dim
+        # xs: output: utt x 1 (input channel num) x frame x dim
+        xs = xs.contiguous().view(xs.size(0), xs.size(1), self.in_channels, xs.size(2) // self.in_channels).transpose(1, 2)
+
+        # xs = self.conv0(xs)
+        xs = self.resblock1(xs)
+        xs = self.maxpool1(xs)
+        xs = self.resblock2(xs)
+        xs = self.maxpool2(xs)
+        xs = self.resblock3(xs)
+
+        # change ilens accordingly
+        # in maxpooling layer: stride(2), padding(0), kernel(2)
+
+
+        fnc = np.ceil if self.ceil_mode else np.floor
+
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [2, 0, 2];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - k) / s) + 1), dtype=np.int64)
+
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [1, self.dilation, 3];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - self.dilation * (k - 1) - 1) / s) + 1),
+                         dtype=np.int64)
+        s, p, k = [2, 0, 2];
+        ilens = np.array(fnc(((np.array(ilens, dtype=np.float32) + 2 * p - k) / s) + 1), dtype=np.int64).tolist()
+
+
+        # x: utt_list of frame (remove zeropaded frames) x (input channel num x dim)
+        xs = xs.transpose(1, 2)
+
+        xs = xs.contiguous().view(
+            xs.size(0), xs.size(1), xs.size(2) * xs.size(3))
+
+        xs = [xs[i, :ilens[i]] for i in range(len(ilens))]
+        xs = pad_list(xs, 0.0)
+
+        return xs, ilens
+
+
+class VGGOnly(torch.nn.Module):
+
+    # default is vgg
+    # VGG:  Vgg()
+    # add Residual connection: (bias=False, resnet=True)
+
+    def __init__(self, idim, eprojs, batch_norm=False, spatial_dp=False, ceil_mode=False, in_channels=1, bias=True, resnet=False, dilation=1):
+        super(VGGOnly, self).__init__()
+
+        # self.conv0 = ConvBasicBlock(in_channels, 16, 1, 1, 0, False, True, batch_norm, spatial_dp)
+        self.resblock1 = CNNBasicBlock(in_channels, 64, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=resnet, bias=bias, dilation=dilation)
+        self.maxpool1 = torch.nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=ceil_mode)
+
+        self.resblock2 = CNNBasicBlock(64, 128, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=resnet, bias=bias, dilation=dilation)
+        self.maxpool2 = torch.nn.MaxPool2d(kernel_size=2, stride=2, ceil_mode=ceil_mode)
+
+        self.linear = torch.nn.Linear(_get_maxpooling2_odim(idim, in_channel=in_channels), eprojs)
+        self.in_channels = in_channels
+        self.ceil_mode = ceil_mode
+
+    def forward(self, xs, ilens):
+        logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+
+        # xs: input: utt x frame x dim
+        # xs: output: utt x 1 (input channel num) x frame x dim
+        xs = xs.contiguous().view(xs.size(0), xs.size(1), self.in_channels, xs.size(2) // self.in_channels).transpose(1, 2)
+
+        # xs = self.conv0(xs)
+        xs = self.resblock1(xs)
+        xs = self.maxpool1(xs)
+        xs = self.resblock2(xs)
+        xs = self.maxpool2(xs)
+
+        # change ilens accordingly
+        # in maxpooling layer: stride(2), padding(0), kernel(2)
+        s, p, k = [2,0,2]
+
+        fnc = np.ceil if self.ceil_mode else np.floor
+
+        ilens = np.array(
+            fnc(((np.array(ilens, dtype=np.float32)+2*p-k)/s)+1), dtype=np.int64)
+        ilens = np.array(
+            fnc(((np.array(ilens, dtype=np.float32)+2*p-k)/s)+1), dtype=np.int64).tolist()
+
+        # x: utt_list of frame (remove zeropaded frames) x (input channel num x dim)
+        xs = xs.transpose(1, 2)
+
+        xs = xs.contiguous().view(
+            xs.size(0), xs.size(1), xs.size(2) * xs.size(3))
+
+        xs = linear_tensor(self.linear, xs) # projection to eprojs
+
+        xs = [xs[i, :ilens[i]] for i in range(len(ilens))]
+        xs = pad_list(xs, 0.0)
+
+        return xs, ilens
+
+class ResNetOrig(torch.nn.Module):
+    # ceil mode is not supported due to conv.
+    def __init__(self, batch_norm=False, spatial_dp=False, ceil_mode=False, in_channels=1, inplace=True, dilation=1):
+        super(ResNetOrig, self).__init__()
+
+        self.conv0 = ConvBasicBlock(in_channels, 64, 7, 2, 3, False, True, batch_norm, spatial_dp)
+        self.maxpool1 = torch.nn.MaxPool2d(kernel_size=3, stride=2, padding=1, ceil_mode=ceil_mode)
+
+        self.resblock1 = CNNBasicBlock(64, 64, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=True,inplace=inplace, dilation=dilation)
+        self.resblock2 = CNNBasicBlock(64, 64, batch_norm=batch_norm, spatial_dp=spatial_dp, resnet=True,inplace=inplace, dilation=dilation)
+
+        self.in_channels = in_channels
+        self.ceil_mode = ceil_mode
+
+    def forward(self, xs, ilens):
+        logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+
+        # xs: input: utt x frame x dim
+        # xs: output: utt x 1 (input channel num) x frame x dim
+        xs = xs.contiguous().view(xs.size(0), xs.size(1), self.in_channels, xs.size(2) // self.in_channels).transpose(1, 2)
+
+        xs = self.conv0(xs)
+        xs = self.resblock1(xs)
+        xs = self.resblock2(xs)
+
+        # change ilens accordingly
+        # in maxpooling layer: stride(2), padding(0), kernel(2)
+        s, p, k = [2,3,7]
+
+        fnc = np.ceil if self.ceil_mode else np.floor
+        s, p, k = [2, 3, 7]
+        ilens = np.array(
+            fnc(((np.array(ilens, dtype=np.float32)+2*p-k)/s)+1), dtype=np.int64)
+        s, p, k = [2, 1, 3]
+        ilens = np.array(
+            fnc(((np.array(ilens, dtype=np.float32)+2*p-k)/s)+1), dtype=np.int64).tolist()
+
+        # x: utt_list of frame (remove zeropaded frames) x (input channel num x dim)
+        xs = xs.transpose(1, 2)
+
+        xs = xs.contiguous().view(
+            xs.size(0), xs.size(1), xs.size(2) * xs.size(3))
+
+        xs = [xs[i, :ilens[i]] for i in range(len(ilens))]
+        xs = pad_list(xs, 0.0)
+
+        return xs, ilens
+
+
+
+
+
+######################## Implementation of RCNN in https://arxiv.org/pdf/1702.07793.pdf
+
+def conv3x3(inplanes, planes, stride=(1,1), padding=(1,1), dilation=(1,1), bias=False):
+    """3x3 convolution with padding
+        Hout = floor((Hin+2xpadding-dilationx(kernel_size-1)-1)/stride+1)
+    """
+    return torch.nn.Conv2d(inplanes, planes,
+                           kernel_size=3,
+                           stride=stride,
+                           padding=padding,
+                           dilation=dilation,
+                           bias=bias)
+
+
+class BasicBlock_BnReluConv(torch.nn.Module):
+
+    def __init__(self, inplanes, planes, stride=(1,1), downsample=None, flag_bn=True, flag_relu=True, flag_dp=False):
+        super(BasicBlock_BnReluConv, self).__init__()
+
+        if flag_bn:
+            self.batchnorm1 = torch.nn.BatchNorm2d(inplanes)
+            self.batchnorm2 = torch.nn.BatchNorm2d(planes)
+
+        if flag_relu:
+            self.relu = torch.nn.ReLU(inplace=True)
+
+        if flag_dp:
+            self.dp = torch.nn.Dropout2d()  # plane dropout
+
+        self.conv1 = conv3x3(inplanes, planes, stride=stride)
+        self.conv2 = conv3x3(planes, planes)
+
+        self.downsample = downsample
+        self.stride = stride
+        self.flag_bn, self.flag_relu, self.flag_dp = flag_bn, flag_relu, flag_dp
+
+    def forward(self, x):
+        residual = x
+
+
+        if self.flag_bn:   out = self.batchnorm1(x)
+        else: out = x
+        if self.flag_relu: out = self.relu(out)
+
+        out = self.conv1(out)
+
+        if self.flag_dp: out = self.dp(out)
+
+        if self.flag_bn:   out = self.batchnorm2(out)
+        if self.flag_relu: out = self.relu(out)
+
+        out = self.conv2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        return out
+
+
+def _get_RCNN_odim(idim, params, inplanes=1, planes=512):
+    # in spectral axis
+    idim = idim / inplanes
+    idim = np.array(idim, dtype=np.float32)
+
+    # params = [(1,2,3,4), (1,2,3,4)]
+    for param in params:
+        s, p, d, k = param # stride, padding, dilation, kernel_size
+        idim = np.floor(((idim + 2 * p - d * (k - 1) - 1) / s) + 1)
+
+    return int(idim) * planes  # numer of channels
+
+
+def _get_RCNN_ilens(ilens, params):
+
+    # in time axis
+    ilens = np.array(ilens, dtype=np.float32)
+
+    # params = [(1,2,3,4), (1,2,3,4)]
+    for param in params:
+        s, p, d, k = param # stride, padding, dilation, kernel_size
+        ilens = np.array(np.floor(((ilens + 2 * p - d * (k - 1) - 1) / s) + 1),dtype=np.int64)
+    ilens = ilens.tolist()
+    return ilens
+
+
+
+
+class RCNN(torch.nn.Module):
+    """
+    Implementation of RCNN in Residual Convolutional CTC Networks for Automatic Speech Recognition
+    https://arxiv.org/pdf/1702.07793.pdf
+    """
+    def __init__(self, idim, block, eprojs, layers=(2,2,2,2), expansion=2, inplanes=1, flag_bn=True, flag_relu=True, flag_dp=False):
+        self.inplanes_updated = 32
+        super(RCNN, self).__init__()
+
+        self.conv1 = torch.nn.Conv2d(1, 32, kernel_size=(11, 41), stride=(2,2), padding=(5, 20), bias=False)
+
+        self.layer1 = self._make_layer(block, 64*expansion, layers[0], flag_bn = flag_bn, flag_relu = flag_relu, flag_dp = flag_dp)
+        self.layer2 = self._make_layer(block, 128*expansion, layers[1], flag_bn = flag_bn, flag_relu = flag_relu, flag_dp = flag_dp)
+        self.layer3 = self._make_layer(block, 256*expansion, layers[2], stride=(1,2), flag_bn = flag_bn, flag_relu = flag_relu, flag_dp = flag_dp)
+        self.layer4 = self._make_layer(block, 512*expansion, layers[3], stride=(2,2),flag_bn = flag_bn, flag_relu = flag_relu, flag_dp = flag_dp)
+
+        # stride, padding, dilation, kernel_size
+        self.params_freq = [[2,20,1,41],[1,1,1,3],[1,1,1,3],[2,1,1,3],[2,1,1,3]]
+
+        self.params_time = [[2,5,1,11],[1,1,1,3],[1,1,1,3],[1,1,1,3],[2,1,1,3]]
+        self.linear = torch.nn.Linear(_get_RCNN_odim(idim, self.params_freq, inplanes=inplanes, planes=512*expansion), eprojs)
+        self.inplanes = inplanes
+
+        # TODO
+        # for m in self.modules():
+        #     if isinstance(m, nn.Conv2d):
+        #         nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        #     elif isinstance(m, nn.BatchNorm2d):
+        #         nn.init.constant_(m.weight, 1)
+        #         nn.init.constant_(m.bias, 0)
+
+    def _make_layer(self, block, planes, blocks, stride=(1,1), flag_bn=True, flag_relu=True, flag_dp=False):
+        downsample = None
+
+        if stride[0] != 1 or stride[1] != 1 or self.inplanes_updated != planes:
+            downsample = torch.nn.Conv2d(self.inplanes_updated, planes, kernel_size=1, stride=stride, bias=False)
+
+        layers = []
+        layers.append(block(self.inplanes_updated, planes, stride, downsample, flag_bn = flag_bn, flag_relu = flag_relu, flag_dp = flag_dp))
+
+        self.inplanes_updated = planes
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes_updated, planes, flag_bn = flag_bn, flag_relu = flag_relu, flag_dp = flag_dp))
+
+        return torch.nn.Sequential(*layers)
+
+    def forward(self, xs, ilens):
+        logging.info(self.__class__.__name__ + ' input lengths: ' + str(ilens))
+
+
+        # xs: input: utt x frame x dim
+        # xs: output: utt x 1 (input channel num) x frame x dim
+        xs = xs.contiguous().view(xs.size(0), xs.size(1), self.inplanes, xs.size(2) // self.inplanes).transpose(1, 2)
+
+        # logging.warning(xs.shape)
+
+        xs = self.conv1(xs)
+        # logging.warning(xs.shape)
+        xs = self.layer1(xs)
+        # logging.warning(xs.shape)
+        xs = self.layer2(xs)
+        # logging.warning(xs.shape)
+        xs = self.layer3(xs)
+        # logging.warning(xs.shape)
+        xs = self.layer4(xs)
+        # logging.warning(xs.shape)
+
+
+        # change ilens accordingly
+        # logging.warning(ilens)
+        ilens =  _get_RCNN_ilens(ilens, self.params_time)
+        # logging.warning(ilens)
+        # x: utt_list of frame (remove zeropaded frames) x (input channel num x dim)
+        xs = xs.transpose(1, 2)
+        # logging.warning(xs.shape)
+        xs = xs.contiguous().view(
+            xs.size(0), xs.size(1), xs.size(2) * xs.size(3))
+        # logging.warning(xs.shape)
+        xs = linear_tensor(self.linear, xs) # projection to eprojs
+        # logging.warning(xs.shape)
+        xs = [xs[i, :ilens[i]] for i in range(len(ilens))]
+        xs = pad_list(xs, 0.0)
+        # logging.warning(xs.shape)
+
         return xs, ilens

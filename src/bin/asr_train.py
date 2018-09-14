@@ -14,6 +14,8 @@ import sys
 
 import numpy as np
 
+def str2bool(v):
+  return v.lower() in ("yes", "true", "t", "1")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -42,18 +44,25 @@ def main():
     parser.add_argument('--verbose', '-V', default=0, type=int,
                         help='Verbose option')
     # task related
-    parser.add_argument('--train-feat', type=str, required=True,
+    parser.add_argument('--train-feat', type=str, default=None,
                         help='Filename of train feature data (Kaldi scp)')
-    parser.add_argument('--valid-feat', type=str, required=True,
+    parser.add_argument('--valid-feat', type=str, default=None,
                         help='Filename of validation feature data (Kaldi scp)')
-    parser.add_argument('--train-label', type=str, required=True,
+    parser.add_argument('--train-json', type=str, default=None,
                         help='Filename of train label data (json)')
-    parser.add_argument('--valid-label', type=str, required=True,
+    parser.add_argument('--valid-json', type=str, default=None,
+                        help='Filename of validation label data (json)')
+    parser.add_argument('--train-label', type=str, default=None,
+                        help='Filename of train label data (json)')
+    parser.add_argument('--valid-label', type=str, default=None,
                         help='Filename of validation label data (json)')
     # network archtecture
     # encoder
     parser.add_argument('--etype', default='blstmp', type=str,
-                        choices=['blstm', 'blstmp', 'vggblstmp', 'vggblstm'],
+                        choices=['blstm', 'blstmp', 'blstmss', 'blstmpbn',
+                                 'vgg', 'vggblstm', 'vgg8blstm','vggblstmp', 'vggbnblstm', 'vggbnblstmp', 'vggceilblstm', 'vggceilblstmp', 'vggnbblstm', 'vggnbblstmp','vggsjblstm',
+                                 'resblstm', 'resblstmp', 'resbnblstm', 'resbnblstmp', 'resceilblstm', 'resceilblstmp', 'resnbblstm', 'resnbblstmp','resorigblstm',
+                                 'multiVggblstmBlstmp','multiBandBlstmpBlstmp','highBandBlstmp','lowBandBlstmp','vggresblstm', 'vggdil2blstm', 'vggresdil2blstm','multiBlstmpBlstmp4','multiVggdil2blstmBlstmp','rcnn','rcnnNObn','rcnnDp','rcnnDpNObn','multiVgg8blstmBlstmp','multiVggblstmpBlstmp','multiVggblstmpBlstmpFixed4','multiVggblstmBlstmpFixed4','amiCH1BlstmpCH2Blstmp','amiCH1Blstmp', 'amiCH2Blstmp','amiCH1VggblstmCH2Vggblstm','amiCH1Vggblstm', 'amiCH2Vggblstm'],
                         help='Type of encoder network architecture')
     parser.add_argument('--elayers', default=4, type=int,
                         help='Number of encoder layers')
@@ -64,6 +73,12 @@ def main():
     parser.add_argument('--subsample', default=1, type=str,
                         help='Subsample input frames x_y_z means subsample every x frame at 1st layer, '
                              'every y frame at 2nd layer etc.')
+
+    # multi-encoder, multi-band
+    # train
+    parser.add_argument('--num-enc', default=1, type=int, help='Number of encoder streams.')
+    parser.add_argument("--share-ctc", type=str2bool, default=True, help="Activate ctc share mode.")
+
     # loss
     parser.add_argument('--ctc_type', default='warpctc', type=str,
                         choices=['chainer', 'warpctc'],
@@ -73,7 +88,12 @@ def main():
                         choices=['noatt', 'dot', 'add', 'location', 'coverage',
                                  'coverage_location', 'location2d', 'location_recurrent',
                                  'multi_head_dot', 'multi_head_add', 'multi_head_loc',
-                                 'multi_head_multi_res_loc'],
+                                 'multi_head_multi_res_loc', 'enc2_add_l2w0.5','enc2_add_l2dp','enc2_add',
+                                 'enc2_add_linproj','enc2_add_linprojtanh','enc2_add_addlinproj','enc2_add_addlinprojtanh',
+                                 'enc2_none_frmaddlinproj', 'enc2_none_frmaddlinprojtanh',
+                                 'enc2_none_frmaddaddlinprojtanh',
+                                 'enc2_add_frmaddlinproj', 'enc2_add_frmaddlinprojtanh', 'enc2_add_frmaddaddlinprojtanh'
+                                 ],
                         help='Type of attention architecture')
     parser.add_argument('--adim', default=320, type=int,
                         help='Number of attention transformation dimensions')
@@ -113,8 +133,16 @@ def main():
                         help='Batch size is reduced if the output sequence length > ML')
     # optimization related
     parser.add_argument('--opt', default='adadelta', type=str,
-                        choices=['adadelta', 'adam'],
+                        choices=['adadelta', 'adam', 'sgd'],
                         help='Optimizer')
+    parser.add_argument('--lr', default=1e-3, type=float,
+                        help='Learning rate constant for sgd optimizer')
+    parser.add_argument('--lr_decay', default=1e-1, type=float,
+                        help='Learning rate decay (lr*decay) constant for sgd optimizer')
+    parser.add_argument('--mom', default=0.9, type=float,
+                        help='Momentum constant for sgd optimizer')
+    parser.add_argument('--wd', default=0, type=float,
+                        help='MWeight decay constant for sgd optimizer')
     parser.add_argument('--eps', default=1e-8, type=float,
                         help='Epsilon constant for optimizer')
     parser.add_argument('--eps-decay', default=0.01, type=float,
@@ -128,6 +156,8 @@ def main():
                         help='Number of maximum epochs')
     parser.add_argument('--grad-clip', default=5, type=float,
                         help='Gradient norm threshold to clip')
+    parser.add_argument('--num-save-attention', default=3, type=int,
+                        help='Number of samples of attention to be saved')
     args = parser.parse_args()
 
     # logging info
@@ -146,6 +176,19 @@ def main():
             args.ngpu = 0
         else:
             args.ngpu = 1
+
+    # TODO(nelson) remove in future
+    if (args.train_feat is not None) or \
+       (args.valid_feat is not None) or \
+       (args.train_label is not None) or \
+       (args.valid_label is not None):
+        logging.error(
+            "--train-feat, --valid-feat, --train-label, and valid-label"
+            "options are deprecated, please use --train-json and --valid-json options.")
+        logging.error(
+            "input file format (json) is modified, please redo"
+            "stage 1: Feature Generation")
+        sys.exit(1)
 
     # check CUDA_VISIBLE_DEVICES
     if args.ngpu > 0:
