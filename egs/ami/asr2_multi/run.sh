@@ -207,6 +207,7 @@ if [ ${stage} -le 1 ]; then
     # compute global CMVN
     compute-cmvn-stats scp:data/${train_set}/feats.scp data/${train_set}/cmvn.ark
 
+    exit 0 # run till here and then run run_multi_encoder.sh
     # dump features for training
     if [[ $(hostname -f) == *.clsp.jhu.edu ]] && [ ! -d ${feat_tr_dir}/storage ]; then
     utils/create_split_dir.pl \
