@@ -9,12 +9,13 @@
 # general configuration
 backend=chainer
 stage=0        # start from 0 if you need to start from data preparation
-ngpu=0         # number of gpus ("0" uses cpu, otherwise use gpu)
+ngpu=0         # number of gpus ("0" us es cpu, otherwise use gpu)
 debugmode=1
 dumpdir=dump   # directory to dump full features
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
 verbose=0      # verbose option
 resume=        # Resume the training from snapshot
+seed=1
 
 # feature configuration
 do_delta=false
@@ -32,11 +33,17 @@ dunits=1024
 # attention related
 atype=location
 adim=1024
+awin=5
+aheads=4
 aconv_chans=10
 aconv_filts=100
 
 # hybrid CTC/attention
-mtlalpha=0.5
+mtlalpha=0.5 # TODO: wsj 0.2; orig:0.5
+
+# label smoothing # TODO: orign n'' and 0; wsj: unigram 0.05
+lsm_type=''
+lsm_weight=0.0
 
 # minibatch related
 batchsize=25
@@ -45,7 +52,13 @@ maxlen_out=150 # if output length > maxlen_out, batchsize is automatically reduc
 
 # optimization related
 opt=adadelta
-epochs=10
+epochs=10 # TODO: wsj 15, orig 10
+
+# sgd parameters
+lr=1e-3
+lr_decay=1e-1
+mom=0.9
+wd=0
 
 # rnnlm related
 use_wordlm=true     # false means to train/use a character LM
@@ -58,6 +71,7 @@ lm_epochs=20        # number of epochs
 lm_maxlen=40        # 150 for character LMs
 lm_resume=          # specify a snapshot file to resume LM training
 lmtag=              # tag for managing LMs
+use_lm=true
 
 # decoding parameter
 lm_weight=1.0
@@ -76,6 +90,21 @@ wsj1=/export/corpora5/LDC/LDC94S13B           # JHU setup
 # exp tag
 tag="" # tag for managing experiments.
 
+
+# multl-encoder multi-band
+num_enc=1
+share_ctc=true
+l2_dropout=0.5
+
+# for decoding only ; only works for multi case
+l2_weight=0.5
+
+# add gaussian noise to the features (only works for encoder type: 'multiBandBlstmpBlstmp', 'blstm', 'blstmp', 'blstmss', 'blstmpbn', 'vgg', 'rcnn', 'rcnnNObn', 'rcnnDp', 'rcnnDpNObn')
+addgauss=false
+addgauss_mean=0
+addgauss_std=1
+addgauss_type=all # all, high43 low43
+
 . utils/parse_options.sh || exit 1;
 
 . ./path.sh
@@ -89,11 +118,12 @@ set -o pipefail
 
 train_set=tr05_multi_noisy_si284 # tr05_multi_noisy (original training data) or tr05_multi_noisy_si284 (add si284 data)
 train_dev=dt05_multi_isolated_1ch_track
-recog_set="\
-dt05_real_isolated_1ch_track dt05_simu_isolated_1ch_track et05_real_isolated_1ch_track et05_simu_isolated_1ch_track \
-dt05_real_beamformit_2mics dt05_simu_beamformit_2mics et05_real_beamformit_2mics et05_simu_beamformit_2mics \
-dt05_real_beamformit_5mics dt05_simu_beamformit_5mics et05_real_beamformit_5mics et05_simu_beamformit_5mics \
-"
+#recog_set="\
+#dt05_real_isolated_1ch_track dt05_simu_isolated_1ch_track et05_real_isolated_1ch_track et05_simu_isolated_1ch_track \
+#dt05_real_beamformit_2mics dt05_simu_beamformit_2mics et05_real_beamformit_2mics et05_simu_beamformit_2mics \
+#dt05_real_beamformit_5mics dt05_simu_beamformit_5mics et05_real_beamformit_5mics et05_simu_beamformit_5mics \
+#"
+recog_set="dt05_real_isolated_1ch_track dt05_simu_isolated_1ch_track et05_real_isolated_1ch_track et05_simu_isolated_1ch_track"
 
 if [ ${stage} -le 0 ]; then
     ### Task dependent. You have to make the following data preparation part by yourself.
@@ -213,7 +243,7 @@ fi
 lmexpdir=exp/train_rnnlm_${backend}_${lmtag}
 mkdir -p ${lmexpdir}
 
-if [ ${stage} -le 3 ]; then
+if [[ ${stage} -le 3 && $use_lm == true ]]; then
     echo "stage 3: LM Preparation"
     if [ $use_wordlm = true ]; then
         lmdatadir=data/local/wordlm_train
@@ -261,7 +291,15 @@ if [ ${stage} -le 3 ]; then
 fi
 
 if [ -z ${tag} ]; then
-    expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}${adim}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}
+    expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}${adim}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}_shareCtc${share_ctc}
+
+    if [ $atype == 'enc2_add_l2dp' ]; then
+        expdir=${expdir}_l2attdp${l2_dropout}
+    fi
+
+    if [ "${lsm_type}" != "" ]; then
+        expdir=${expdir}_lsm${lsm_type}${lsm_weight}
+    fi
     if ${do_delta}; then
         expdir=${expdir}_delta
     fi
@@ -283,6 +321,7 @@ if [ ${stage} -le 4 ]; then
         --minibatches ${N} \
         --verbose ${verbose} \
         --resume ${resume} \
+        --seed ${seed} \
         --train-json ${feat_tr_dir}/data.json \
         --valid-json ${feat_dt_dir}/data.json \
         --etype ${etype} \
@@ -294,14 +333,25 @@ if [ ${stage} -le 4 ]; then
         --dunits ${dunits} \
         --atype ${atype} \
         --adim ${adim} \
+        --awin ${awin} \
+        --aheads ${aheads} \
         --aconv-chans ${aconv_chans} \
         --aconv-filts ${aconv_filts} \
         --mtlalpha ${mtlalpha} \
+        --lsm-type ${lsm_type} \
+        --lsm-weight ${lsm_weight} \
         --batch-size ${batchsize} \
         --maxlen-in ${maxlen_in} \
         --maxlen-out ${maxlen_out} \
         --opt ${opt} \
-        --epochs ${epochs}
+        --epochs ${epochs} \
+        --lr ${lr} \
+        --lr_decay ${lr_decay} \
+        --mom ${mom} \
+        --wd ${wd} \
+        --num-enc ${num_enc} \
+        --share-ctc ${share_ctc} \
+        --l2-dropout ${l2_dropout}
 fi
 
 if [ ${stage} -le 5 ]; then
@@ -311,15 +361,29 @@ if [ ${stage} -le 5 ]; then
     for rtask in ${recog_set}; do
     (
         decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}_rnnlm${lm_weight}_${lmtag}
-        if [ $use_wordlm = true ]; then
-            recog_opts="--word-rnnlm ${lmexpdir}/rnnlm.model.best"
+        # TODO delete  rnnlm${lm_weight}_${lmtag}
+
+        if [ $use_lm = true ]; then
+            decode_dir=${decode_dir}_rnnlm${lm_weight}_${lmtag}
+            if [ $use_wordlm = true ]; then
+                recog_opts="--word-rnnlm ${lmexpdir}/rnnlm.model.best"
+            else
+                recog_opts="--rnnlm ${lmexpdir}/rnnlm.model.best"
+            fi
         else
-            recog_opts="--rnnlm ${lmexpdir}/rnnlm.model.best"
+            echo "No language model is involved."
+            recog_opts=""
         fi
+
+        if [ $addgauss = true ]; then
+            decode_dir=${decode_dir}_gauss-${addgauss_type}-mean${addgauss_mean}-std${addgauss_std}
+            recog_opts+=" --addgauss true --addgauss-mean ${addgauss_mean} --addgauss-std ${addgauss_std} --addgauss-type ${addgauss_type}"
+        fi
+
         feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
 
         # split data
-        splitjson.py --parts ${nj} ${feat_recog_dir}/data.json 
+        splitjson.py --parts ${nj} ${feat_recog_dir}/data.json
 
         #### use CPU for decoding
         ngpu=0

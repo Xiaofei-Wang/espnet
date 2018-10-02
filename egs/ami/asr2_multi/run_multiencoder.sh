@@ -1,7 +1,7 @@
-#CE!/bin/bash
+#!/bin/bash
 
 # Copyright 2017 Johns Hopkins University (Shinji Watanabe)
-#           2018 Johns Hoplins University (Xiaofei Wang)
+#           2018 Johns Hoplins University (Xiaofei Wang, Ruizhi Li)
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
 . ./path.sh
@@ -21,7 +21,7 @@ seed=1
 # feature configuration
 do_delta=false
 
-# network archtecture
+# network architecture
 # encoder related
 etype=blstmp     # encoder architecture type
 elayers=8
@@ -40,10 +40,10 @@ aconv_chans=10
 aconv_filts=100
 
 # hybrid CTC/attention
-mtlalpha=0.5
+mtlalpha=0.5 # TODO: check origin 0.5 and wsj 0.2
 
-lsm_type=unigram
-lsm_weight=0.05
+lsm_type=unigram # todo: orig '', wsj:unigram
+lsm_weight=0.05 # todo: orig 0, wsj:0.05
 
 # minibatch related
 batchsize=30
@@ -54,6 +54,7 @@ maxlen_out=150 # if output length > maxlen_out, batchsize is automatically reduc
 opt=adadelta
 epochs=15
 
+# sgd parameters
 lr=1e-3
 lr_decay=1e-1
 mom=0.9
@@ -70,12 +71,17 @@ lm_epochs=20        # number of epochs
 lm_maxlen=40        # 150 for character LMs
 lm_resume=          # specify a snapshot file to resume LM training
 lmtag=              # tag for managing LMs
+has_fisher_swbd=  # ''[empty], fisher, swbd, fisher_swbd
 use_lm=true
+
+# lm data
+fisher_dirs="/export/corpora3/LDC/LDC2004T19 /export/corpora3/LDC/LDC2005T19 /export/corpora3/LDC/LDC2004S13 /export/corpora3/LDC/LDC2005S13"
+swbd1_dir=/export/corpora3/LDC/LDC97S62
 
 # decoding parameter
 lm_weight=1.0
-beam_size=20
-penalty=0.2
+beam_size=20 # TODO: orig: 20, wsj: 30
+penalty=0.2 # TODO: orig:0.2, wsj:0.0
 maxlenratio=0.0
 minlenratio=0.0
 ctc_weight=0.3
@@ -205,7 +211,7 @@ if [ ${stage} -le 2 ]; then
     | sort | uniq | grep -v -e '^\s*$' | awk '{print $0 " " NR+1}' >> ${dict}
     wc -l ${dict}
 
-    # make json labels
+    echo "make json files"
     data2json.sh --feat ${feat_tr_dir}/feats.scp \
          data/${train_set} ${dict} > ${feat_tr_dir}/data.json
     data2json.sh --feat ${feat_dt_dir}/feats.scp \
@@ -217,12 +223,15 @@ if [ ${stage} -le 2 ]; then
     done
 fi
 
-# It takes a few days. If you just want to end-to-end ASR without LM,
+# It takes about one day. If you just want to do end-to-end ASR without LM,
 # you can skip this and remove --rnnlm option in the recognition (stage 5)
 if [ -z ${lmtag} ]; then
     lmtag=${lm_layers}layer_unit${lm_units}_${lm_opt}_bs${lm_batchsize}
     if [ $use_wordlm = true ]; then
         lmtag=${lmtag}_word${lm_vocabsize}
+    fi
+    if [ ! -z $has_fisher_swbd ]; then
+        lmtag=${lmtag}_$has_fisher_swbd
     fi
 fi
 lmexpdir=exp/train_rnnlm_${backend}_${lmtag}
@@ -230,24 +239,61 @@ mkdir -p ${lmexpdir}
 
 if [[ ${stage} -le 3 && $use_lm == true ]]; then
     echo "stage 3: LM Preparation"
+
+    if [ ! -z $has_fisher_swbd ];then
+    echo "Prepare fisher and switchboard data for LM training"
+    local/fisher_data_prep.sh ${fisher_dirs}
+    local/swbd1_data_download.sh ${swbd1_dir}
+    local/fisher_swbd_prepare_dict.sh
+    chmod 644 data/local/dict_nosp/lexicon0.txt
+    local/swbd1_data_prep.sh ${swbd1_dir}
+    fi
+
     if [ $use_wordlm = true ]; then
-	lmdatadir=data/local/wordlm_train
-	lmdict=${lmdatadir}/wordlist_${lm_vocabsize}.txt
-	mkdir -p ${lmdatadir}
-        cat data/${train_set}/text | cut -f 2- -d" " > ${lmdatadir}/train.txt
+        lmdatadir=data/local/wordlm_train
+        [ ! -z $has_fisher_swbd ] && lmdatadir=${lmdatadir}_${has_fisher_swbd}
+        lmdict=${lmdatadir}/wordlist_${lm_vocabsize}.txt
+        mkdir -p ${lmdatadir}
+        cat data/${train_set}/text | cut -f 2- -d" " > ${lmdatadir}/train_trans.txt
+
+        touch ${lmdatadir}/train_others.txt
+        if [ $has_fisher_swbd == 'fisher' ]; then # TODO
+            cat data/train_fisher/text | grep -v "]" | tr [a-z] [A-Z] > ${lmdatadir}/train_others.txt
+        elif [ $has_fisher_swbd == 'swbd' ]; then
+            cat data/train_swbd/text | grep -v "]" | tr [a-z] [A-Z] > ${lmdatadir}/train_others.txt
+        elif [ $has_fisher_swbd == 'fisher_swbd' ]; then
+            cat data/train_swbd/text data/train_fisher/text | grep -v "]" | tr [a-z] [A-Z] > ${lmdatadir}/train_others.txt
+        fi
+
         cat data/${train_dev}/text | cut -f 2- -d" " > ${lmdatadir}/valid.txt
         cat data/${train_test}/text | cut -f 2- -d" " > ${lmdatadir}/test.txt
+        cat ${lmdatadir}/train_trans.txt ${lmdatadir}/train_others.txt > ${lmdatadir}/train.txt
         text2vocabulary.py -s ${lm_vocabsize} -o ${lmdict} ${lmdatadir}/train.txt
     else
-	lmdatadir=data/local/lm_train
-	lmdict=$dict
-	mkdir -p ${lmdatadir}
-        text2token.py -s 1 -n 1 data/${train_set}/text | cut -f 2- -d" " \
-            > ${lmdatadir}/train.txt
-        text2token.py -s 1 -n 1 data/${train_dev}/text | cut -f 2- -d" " \
-            > ${lmdatadir}/valid.txt
-        text2token.py -s 1 -n 1 data/${train_test}/text | cut -f 2- -d" " \
-            > ${lmdatadir}/test.txt
+        lmdatadir=data/local/lm_train
+        [ ! -z $has_fisher_swbd ] && lmdatadir=${lmdatadir}_${has_fisher_swbd}
+        lmdict=$dict
+        mkdir -p ${lmdatadir}
+        text2token.py -s 1 -n 1 data/${train_set}/text \
+            | cut -f 2- -d" " > ${lmdatadir}/train_trans.txt
+
+        touch ${lmdatadir}/train_others.txt
+        if [ $has_fisher_swbd == 'fisher' ]; then # TODO
+            cat data/train_fisher/text | grep -v "]" | tr [a-z] [A-Z] \
+            | text2token.py -n 1 | cut -f 2- -d" " > ${lmdatadir}/train_others.txt
+        elif [ $has_fisher_swbd == 'swbd' ]; then
+            cat data/train_swbd/text | grep -v "]" | tr [a-z] [A-Z] \
+            | text2token.py -n 1 | cut -f 2- -d" " > ${lmdatadir}/train_others.txt
+        elif [ $has_fisher_swbd == 'fisher_swbd' ]; then
+            cat data/train_swbd/text data/train_fisher/text | grep -v "]" | tr [a-z] [A-Z] \
+            | text2token.py -n 1 | cut -f 2- -d" " > ${lmdatadir}/train_others.txt
+        fi
+
+        text2token.py -s 1 -n 1 data/${train_dev}/text \
+            | cut -f 2- -d" " > ${lmdatadir}/valid.txt
+        text2token.py -s 1 -n 1 data/${train_test}/text \
+                | cut -f 2- -d" " > ${lmdatadir}/test.txt
+        cat ${lmdatadir}/train_trans.txt ${lmdatadir}/train_others.txt > ${lmdatadir}/train.txt
     fi
     # use only 1 gpu
     if [ ${ngpu} -gt 1 ]; then
@@ -335,7 +381,6 @@ if [ ${stage} -le 4 ]; then
         --num-enc ${num_enc} \
         --share-ctc ${share_ctc} \
         --l2-dropout ${l2_dropout}
-
 fi
 
 if [ ${stage} -le 5 ]; then
@@ -375,6 +420,7 @@ if [ ${stage} -le 5 ]; then
             asr_recog.py \
             --ngpu ${ngpu} \
             --backend ${backend} \
+            --debugmode ${debugmode} \
             --recog-json ${feat_recog_dir}/split${nj}utt/data.JOB.json \
             --result-label ${expdir}/${decode_dir}/data.JOB.json \
             --model ${expdir}/results/${recog_model}  \
