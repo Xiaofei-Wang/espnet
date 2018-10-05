@@ -7,7 +7,7 @@
 . ./cmd.sh
 
 # general configuration
-backend=chainer
+backend=pytorch
 stage=0        # start from 0 if you need to start from data preparation
 ngpu=0         # number of gpus ("0" uses cpu, otherwise use gpu)
 debugmode=1
@@ -302,11 +302,105 @@ mkdir -p ${expdir}
 
 if [ ${stage} -le 4 ]; then
     echo "stage 4: Network Training"
+
+    ${cuda_cmd} --gpu ${ngpu} ${expdir}/train.log \
+        asr_train.py \
+        --ngpu ${ngpu} \
+        --backend ${backend} \
+        --outdir ${expdir}/results \
+        --debugmode ${debugmode} \
+        --dict ${dict} \
+        --debugdir ${expdir} \
+        --minibatches ${N} \
+        --verbose ${verbose} \
+        --resume ${resume} \
+        --seed ${seed} \
+        --train-json ${feat_tr_dir}/data.json \
+        --valid-json ${feat_dt_dir}/data.json \
+        --etype ${etype} \
+        --elayers ${elayers} \
+        --eunits ${eunits} \
+        --eprojs ${eprojs} \
+        --subsample ${subsample} \
+        --dlayers ${dlayers} \
+        --dunits ${dunits} \
+        --atype ${atype} \
+        --adim ${adim} \
+        --awin ${awin} \
+        --aheads ${aheads} \
+        --aconv-chans ${aconv_chans} \
+        --aconv-filts ${aconv_filts} \
+        --mtlalpha ${mtlalpha} \
+        --lsm-type ${lsm_type} \
+        --lsm-weight ${lsm_weight} \
+        --batch-size ${batchsize} \
+        --maxlen-in ${maxlen_in} \
+        --maxlen-out ${maxlen_out} \
+        --opt ${opt} \
+        --epochs ${epochs} \
+        --lr ${lr} \
+        --lr_decay ${lr_decay} \
+        --mom ${mom} \
+        --wd ${wd} \
+        --num-enc ${num_enc} \
+        --share-ctc ${share_ctc} \
+        --l2-dropout ${l2_dropout}
 fi
 
 if [ ${stage} -le 5 ]; then
     echo "stage 5: Decoding"
     nj=32
+    for rtask in ${recog_set}; do
+    (
+        decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}
+
+        if [ $use_lm = true ]; then
+            decode_dir=${decode_dir}_rnnlm${lm_weight}_${lmtag}
+            if [ $use_wordlm = true ]; then
+                recog_opts="--word-rnnlm ${lmexpdir}/rnnlm.model.best"
+            else
+                recog_opts="--rnnlm ${lmexpdir}/rnnlm.model.best"
+            fi
+        else
+            echo "No language model is involved."
+            recog_opts=""
+        fi
+
+        if [ $addgauss = true ]; then
+            decode_dir=${decode_dir}_gauss-${addgauss_type}-mean${addgauss_mean}-std${addgauss_std}
+            recog_opts+=" --addgauss true --addgauss-mean ${addgauss_mean} --addgauss-std ${addgauss_std} --addgauss-type ${addgauss_type}"
+        fi
+
+        feat_recog_dir=${dumpdir}/${rtask}/delta${do_delta}
+
+        # split data
+        splitjson.py --parts ${nj} ${feat_recog_dir}/data.json
+
+        #### use CPU for decoding
+        ngpu=0
+
+        ${decode_cmd} JOB=1:${nj} ${expdir}/${decode_dir}/log/decode.JOB.log \
+            asr_recog.py \
+            --ngpu ${ngpu} \
+            --backend ${backend} \
+            --debugmode ${debugmode} \
+            --recog-json ${feat_recog_dir}/split${nj}utt/data.JOB.json \
+            --result-label ${expdir}/${decode_dir}/data.JOB.json \
+            --model ${expdir}/results/${recog_model}  \
+            --beam-size ${beam_size} \
+            --penalty ${penalty} \
+            --maxlenratio ${maxlenratio} \
+            --minlenratio ${minlenratio} \
+            --ctc-weight ${ctc_weight} \
+            --lm-weight ${lm_weight} \
+            $recog_opts &
+        wait
+
+        score_sclite.sh --wer true ${expdir}/${decode_dir} ${dict}
+
+    ) &
+    done
+    wait
     echo "Finished"
 fi
 
