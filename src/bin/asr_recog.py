@@ -83,6 +83,9 @@ def main():
     # multiencoder multibands
     # decode
     parser.add_argument('--l2-weight', default=None, type=float, help='fix l2 att weight for first encoder, then the second will be 1-eval-l2-weight, default:None')
+    parser.add_argument('--ctc-l2w', default=0.5, type=float,
+                        help='fix l2 ctc weight for first encoder, then the second will be 1-ctc-l2w, default:0.5')
+
 
     args = parser.parse_args()
 

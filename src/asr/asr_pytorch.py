@@ -438,6 +438,10 @@ def recog(args):
     # read json data
     with open(args.recog_json, 'rb') as f:
         js = json.load(f)['utts']
+    # js in u: dict[uttname] = uttdict
+    # uttdict: {utt2spk: uttname,
+    #           input: [{feat; shape; name}],
+    #           output:[{text; shape; name; token; tokenid;}] ]
 
     # decode each utterance
     new_js = {}
@@ -445,8 +449,14 @@ def recog(args):
         for idx, name in enumerate(js.keys(), 1):
             logging.info('(%d/%d) decoding ' + name, idx, len(js.keys()))
             feat = kaldi_io_py.read_mat(js[name]['input'][0]['feat'])
-            nbest_hyps = e2e.recognize(feat, args, train_args.char_list, rnnlm)
+            y = [int(i) for i in js[name]['output'][0]['tokenid'].split()] # y is reference tokenid list
+            nbest_hyps = e2e.recognize(feat, y, args, train_args.char_list, rnnlm)
+            # nbest_hyps: list of hyps
+            # hyp: {'ctc_score_prev', 'c_prev', 'z_prev', 'a_prev', 'ctc_state_prev', 'yseq', 'score'}
             new_js[name] = add_results_to_json(js[name], nbest_hyps, train_args.char_list)
+    # new_js: dict[uttname] = uttdict
+    # uttdic: {utt2spk: uttname;
+    #          output:[{text; shape; name; token; tokenid; rec_text; score; rec_token;rec_tokenid}]}
 
     # TODO(watanabe) fix character coding problems when saving it
     with open(args.result_label, 'wb') as f:

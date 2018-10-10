@@ -425,6 +425,33 @@ def parse_hypothesis(hyp, char_list):
 
     return text, token, tokenid, score
 
+def parse_hypothesis_multi(hyp, char_list):
+    """Function to parse hypothesis
+
+    :param list hyp: recognition hypothesis
+    :param list char_list: list of characters
+    :return: recognition text strinig
+    :return: recognition token strinig
+    :return: recognition tokenid string
+    """
+    # remove sos and get results
+    tokenid_as_list = list(map(int, hyp['yseq'][1:]))
+    token_as_list = [char_list[idx] for idx in tokenid_as_list]
+    score = float(hyp['score'])
+
+    ref_l2att = hyp['ref_l2att']
+    rec_l2att = hyp['rec_l2att']
+
+    ref_l2att = np.array2string(ref_l2att[:, 0], separator=' ', max_line_width=np.inf)[1:-1]
+    rec_l2att = np.array2string(rec_l2att[:, 0].numpy(), separator=' ', max_line_width=np.inf)[1:-1]
+
+    # convert to string
+    tokenid = " ".join([str(idx) for idx in tokenid_as_list])
+    token = " ".join(token_as_list)
+    text = "".join(token_as_list).replace('<space>', ' ')
+
+    return text, token, tokenid, score, ref_l2att, rec_l2att
+
 
 def add_results_to_json(js, nbest_hyps, char_list):
     """Function to add N-best results to json
@@ -441,7 +468,10 @@ def add_results_to_json(js, nbest_hyps, char_list):
 
     for n, hyp in enumerate(nbest_hyps, 1):
         # parse hypothesis
-        rec_text, rec_token, rec_tokenid, score = parse_hypothesis(hyp, char_list)
+        if 'ref_l2att' in hyp.keys() and 'rec_l2att' in hyp.keys():
+            rec_text, rec_token, rec_tokenid, score, ref_l2att, rec_l2att = parse_hypothesis_multi(hyp, char_list)
+        else:
+            rec_text, rec_token, rec_tokenid, score = parse_hypothesis(hyp, char_list)
 
         # copy ground-truth
         out_dic = dict(js['output'][0].items())
@@ -454,6 +484,10 @@ def add_results_to_json(js, nbest_hyps, char_list):
         out_dic['rec_token'] = rec_token
         out_dic['rec_tokenid'] = rec_tokenid
         out_dic['score'] = score
+        if 'ref_l2att' in hyp.keys() and 'rec_l2att' in hyp.keys():
+            out_dic['ref_l2att'] = ref_l2att
+            out_dic['rec_l2att'] = rec_l2att
+
 
         # add to list of N-best result dicts
         new_js['output'].append(out_dic)

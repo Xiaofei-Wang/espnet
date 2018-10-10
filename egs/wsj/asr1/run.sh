@@ -97,6 +97,7 @@ l2_dropout=0.5
 
 # for decoding only ; only works for multi case
 l2_weight=0.5
+ctc_l2w=0.5
 
 # add gaussian noise to the features (only works for encoder type: 'multiBandBlstmpBlstmp', 'blstm', 'blstmp', 'blstmss', 'blstmpbn', 'vgg', 'rcnn', 'rcnnNObn', 'rcnnDp', 'rcnnDpNObn')
 addgauss=false
@@ -333,6 +334,10 @@ if [ ${stage} -le 5 ]; then
     (
         decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}
 
+        if [ "${ctc_l2w}" != "0.5" ] && [ "${num_enc}" != "1" ]; then
+            decode_dir=${decode_dir}_ctcl2w${ctc_l2w}
+        fi
+
         if [ $use_lm = true ]; then
             decode_dir=${decode_dir}_rnnlm${lm_weight}_${lmtag}
             if [ $use_wordlm = true ]; then
@@ -372,6 +377,7 @@ if [ ${stage} -le 5 ]; then
             --minlenratio ${minlenratio} \
             --ctc-weight ${ctc_weight} \
             --lm-weight ${lm_weight} \
+            --ctc-l2w ${ctc_l2w} \
             $recog_opts &
         wait
 

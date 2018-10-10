@@ -423,10 +423,11 @@ class E2E(torch.nn.Module):
 
         return loss_ctc, loss_att, acc
 
-    def recognize(self, x, recog_args, char_list, rnnlm=None):
+    def recognize(self, x, ref_tokenid, recog_args, char_list, rnnlm=None):
         '''E2E beam search
 
         :param ndarray x: input acouctic feature (T, D)
+        :param list ref_tokenid: list of tokenid (numOutput,)
         :param namespace recog_args: argment namespace contraining options
         :param list char_list: list of characters
         :param torch.nn.Module rnnlm: language model module
@@ -440,10 +441,12 @@ class E2E(torch.nn.Module):
         ilen = [x.shape[0]]
         h = to_cuda(self, torch.from_numpy(
             np.array(x, dtype=np.float32)))
+        ref_tokenid = to_cuda(self, torch.from_numpy(
+            np.array(ref_tokenid, dtype=np.int32)).long())
 
         # 1. encoder
         # make a utt list (1) to use the same interface for encoder
-        h, _ = self.enc(h.unsqueeze(0), ilen)
+        h, ilen = self.enc(h.unsqueeze(0), ilen)
 
         # calculate log P(z_t|X) for CTC scores
         if recog_args.ctc_weight > 0.0:
@@ -456,7 +459,17 @@ class E2E(torch.nn.Module):
 
         # 2. decoder
         # decode the first utterance
+        # y: nbest_hyps: list of hyps
+        # hyp: {'ctc_score_prev', 'c_prev', 'z_prev', 'a_prev', 'ctc_state_prev', 'yseq', 'score'}
         y = self.dec.recognize_beam(h, lpz, recog_args, char_list, rnnlm)
+
+        # attention for each output using reference: tensor(tokenid+1)
+        if self.num_enc == 2:
+            ref_att = self.dec.calculate_all_attentions(h, ilen, ref_tokenid.unsqueeze(0))
+            # get stream level attention weight
+            ref_l2att = ref_att[0, self.num_enc, :, :self.num_enc]
+            # only add to the best hyp
+            y[0]['ref_l2att'] = ref_l2att
 
         if prev:
             self.train()
@@ -1034,7 +1047,7 @@ class Enc2AttAdd(torch.nn.Module):
                 self.l2_mask = to_cuda(self, make_pad_mask([self.num_enc]))
             e_l2.masked_fill_(self.l2_mask, -float('inf'))
 
-            w_l2 = F.softmax(scaling * e_l2, dim=1)
+            w_l2 = F.softmax(scaling * e_l2, dim=1) # TODO What if no scaling????
         else:  # fixed l2 weight
             w_l2 = att_prev[1]
 
@@ -1043,8 +1056,8 @@ class Enc2AttAdd(torch.nn.Module):
         # NOTE equivalent to c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
         # c_l2 = torch.sum(self.enc_h_l2 * w_l2.view(batch, self.h_length_l2, 1), dim=1)
         c_l2 = torch.matmul(w_l2.unsqueeze(1), self.enc_h_l2).squeeze(1)
-        logging.info(self.__class__.__name__ + ' level two attention weight: ')
-        logging.warning(w_l2[0][0])  # print the l2-weight for the first stream
+        # logging.info(self.__class__.__name__ + ' level two attention weight: ')
+        # logging.warning(w_l2[0][0])  # print the l2-weight for the first stream
 
         return c_l2, [w_l1, w_l2]
 
@@ -1206,8 +1219,8 @@ class Enc2AttAddLinProj(torch.nn.Module): # TODO: need to be updated with the ne
 
         if self.apply_tanh: c_l2 = self.tanh(c_l2)
 
-        logging.info(self.__class__.__name__ + ' level two attention weight: ')
-        logging.warning(w_l2[0][0])  # print the l2-weight for the first stream
+        # logging.info(self.__class__.__name__ + ' level two attention weight: ')
+        # logging.warning(w_l2[0][0])  # print the l2-weight for the first stream
 
         return c_l2, [w_l1, w_l2]
 
@@ -2467,6 +2480,7 @@ class Decoder(torch.nn.Module):
         beam = recog_args.beam_size
         penalty = recog_args.penalty
         ctc_weight = recog_args.ctc_weight
+        ctc_l2w = recog_args.ctc_l2w
 
         # in multi stream case, h is a tuple [utt(1) x frame x hdim], lpz is also a tuple [utt(1) x frame x odim]
         # in one stream case, h is utt(1) x frame x hdim, lpz is utt(1) x frame x odim
@@ -2513,7 +2527,6 @@ class Decoder(torch.nn.Module):
                     ctc_beam = lpz.shape[-1]
             hyps = [hyp]
             ended_hyps = []
-            init_hyp = hyp.copy()
         else:
             logging.info('input lengths: ' + str([h[idx].size(0) for idx in range(self.num_enc)]))
 
@@ -2543,9 +2556,9 @@ class Decoder(torch.nn.Module):
             # initialize hypothesis
             if rnnlm:
                 hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list,
-                       'z_prev': z_list, 'a_prev': a, 'rnnlm_prev': None}
+                       'z_prev': z_list, 'a_prev': a, 'rnnlm_prev': None, 'rec_l2att':[]}
             else:
-                hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list, 'z_prev': z_list, 'a_prev': a}
+                hyp = {'score': 0.0, 'yseq': [y], 'c_prev': c_list, 'z_prev': z_list, 'a_prev': a, 'rec_l2att':[]}
 
             if lpz is not None:
                 ctc_prefix_score = [CTCPrefixScore(lpz[idx].detach().numpy(), 0, self.eos, np) for idx in
@@ -2559,7 +2572,6 @@ class Decoder(torch.nn.Module):
                     ctc_beam = lpz[0].shape[-1]
             hyps = [hyp]
             ended_hyps = []
-            init_hyp = hyp.copy()
 
         for i in six.moves.range(maxlen):
             logging.debug('position ' + str(i))
@@ -2604,13 +2616,15 @@ class Decoder(torch.nn.Module):
                         ctc_scores, ctc_states = zip(*[ctc_prefix_score[idx](
                             hyp['yseq'], local_best_ids[0], hyp['ctc_state_prev'][idx]) for idx in range(
                             self.num_enc)])  # ctc_scores=[score_stream1, score_stream2, ..., score_streamN], ctc_states = [state1, state2, ..., stateN] where stateN is beam x frame
+                        ctc_2_scores = np.stack([ctc_scores[idx] - hyp['ctc_score_prev'][idx] for idx in range(self.num_enc)])
+
+                        ctc_2_scores[0, :] = ctc_2_scores[0, :] * ctc_l2w
+                        ctc_2_scores[1, :] = ctc_2_scores[1, :] * (1-ctc_l2w)
+
                         local_scores = \
                             (1.0 - ctc_weight) * local_att_scores[:, local_best_ids[0]] \
                             + ctc_weight * torch.from_numpy(
-                                np.mean(
-                                    np.stack(
-                                        [ctc_scores[idx] - hyp['ctc_score_prev'][idx] for idx in range(self.num_enc)]),
-                                    axis=0))
+                                np.sum(ctc_2_scores, axis=0))
                     if rnnlm:
                         local_scores += recog_args.lm_weight * local_lm_scores[:, local_best_ids[0]]
                     local_best_scores, joint_best_ids = torch.topk(local_scores, beam, dim=1)
@@ -2628,6 +2642,8 @@ class Decoder(torch.nn.Module):
                     new_hyp['yseq'] = [0] * (1 + len(hyp['yseq']))
                     new_hyp['yseq'][:len(hyp['yseq'])] = hyp['yseq']
                     new_hyp['yseq'][len(hyp['yseq'])] = int(local_best_ids[0, j])
+                    if self.num_enc ==2:
+                        new_hyp['rec_l2att'] = hyp['rec_l2att'] + [att_w[1]]
                     if rnnlm:
                         new_hyp['rnnlm_prev'] = rnnlm_state
                     if lpz is not None:
@@ -2669,6 +2685,8 @@ class Decoder(torch.nn.Module):
                         if rnnlm:  # Word LM needs to add final <eos> score
                             hyp['score'] += recog_args.lm_weight * rnnlm.final(
                                 hyp['rnnlm_prev'])
+                        if self.num_enc == 2:
+                            hyp['rec_l2att'] = torch.cat(hyp['rec_l2att'],dim=0)
                         ended_hyps.append(hyp)
                 else:
                     remained_hyps.append(hyp)
