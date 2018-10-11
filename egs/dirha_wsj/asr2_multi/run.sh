@@ -84,7 +84,7 @@ recog_model=model.acc.best # set a model to be used for decoding: 'model.acc.bes
 
 # data
 mic="Beam_Circular_Array Beam_Linear_Array" # must be to elements
-wsj0_folder=/export/b18/xwang/data/Data_processed
+wsj0_folder=/export/b06/xwang/data/Data_processed
 
 # exp tag
 tag="" # tag for managing experiments.
@@ -115,10 +115,10 @@ set -e
 set -u
 set -o pipefail
 
-if [ ${stage} -le 0 ]; then
+if [ ${stage} -le -1 ]; then
     echo "stage 0: Data preparation"
     for mic_sel in $mic; do
-	wsj0_contaminated_folder=WSJ_contaminated_mic_$mic_sel # path of the training data
+        wsj0_contaminated_folder=WSJ_contaminated_mic_$mic_sel # path of the wsj0 training data
 	DIRHA_wsj_data=/export/b18/xwang/data/Data_processed/DIRHA_wsj_oracle_VAD_mic_$mic_sel # path of the test data
     	
 	local/wsj0_data_prep.sh $wsj0_folder $wsj0_contaminated_folder $mic_sel || exit 1;
@@ -126,6 +126,18 @@ if [ ${stage} -le 0 ]; then
 	local/dirha_data_prep.sh $DIRHA_wsj_data/Real dirha_real_$mic_sel  || exit 1;
 
 	local/format_data.sh $mic_sel || exit 1;
+    done
+    
+fi
+
+if [ ${stage} -le 0 ]; then
+    echo "stage 0: wsj0 and wsj1 Data preparation"
+    for mic_sel in $mic; do
+        wsj0_contaminated_folder=WSJ0_contaminated_mic_$mic_sel # path of the wsj0 training data
+	wsj1_contaminated_folder=WSJ1_contaminated_mic_$mic_sel # path of the wsj0 training data
+
+    	local/wsj_data_prep.sh $wsj0_folder $wsj0_contaminated_folder/??-{?,??}.? $wsj1_contaminated_folder/??-{?,??}.? $mic_sel || exit 1;
+	local/wsj_format_data.sh $mic_sel || exit 1;
     done
     
 fi
