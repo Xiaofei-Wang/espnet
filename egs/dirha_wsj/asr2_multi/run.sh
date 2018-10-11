@@ -84,7 +84,7 @@ recog_model=model.acc.best # set a model to be used for decoding: 'model.acc.bes
 
 # data
 mic="Beam_Circular_Array Beam_Linear_Array" # must be to elements
-wsj0_folder=/export/b06/xwang/data/Data_processed
+wsj_folder=/export/b06/xwang/data/Data_processed
 
 # exp tag
 tag="" # tag for managing experiments.
@@ -136,7 +136,7 @@ if [ ${stage} -le 0 ]; then
         wsj0_contaminated_folder=WSJ0_contaminated_mic_$mic_sel # path of the wsj0 training data
 	wsj1_contaminated_folder=WSJ1_contaminated_mic_$mic_sel # path of the wsj0 training data
 
-    	local/wsj_data_prep.sh $wsj0_folder $wsj0_contaminated_folder/??-{?,??}.? $wsj1_contaminated_folder/??-{?,??}.? $mic_sel || exit 1;
+    	local/wsj_data_prep.sh $wsj_folder/$wsj0_contaminated_folder/??-{?,??}.? $wsj_folder/$wsj1_contaminated_folder/??-{?,??}.? || exit 1;
 	local/wsj_format_data.sh $mic_sel || exit 1;
     done
     
@@ -147,17 +147,18 @@ if [ ${stage} -le 1 ]; then
     ### But you can utilize Kaldi recipes in most cases
     echo "stage 1: Feature Generation"
     fbankdir=fbank
+    train_sel=train_si284
     # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
 
     for mic_sel in $mic; do
-        for x in tr05_cont_$mic_sel dirha_sim_$mic_sel dirha_real_$mic_sel; do
+        for x in ${train_sel}_$mic_sel dirha_sim_$mic_sel dirha_real_$mic_sel; do
 	    steps/make_fbank_pitch.sh --cmd "$train_cmd" --nj 10 --write_utt2num_frames true \
 	        data/${x} exp/make_fbank/${x} ${fbankdir}
         done
 	# compute global CMVN
-	compute-cmvn-stats scp:data/tr05_cont_$mic_sel/feats.scp data/tr05_cont_$mic_sel/cmvn.ark
+	compute-cmvn-stats scp:data/${train_sel}_$mic_sel/feats.scp data/${train_sel}_$mic_sel/cmvn.ark
 
-   	train_set=tr05_cont_$mic_sel 
+   	train_set=${train_sel}_$mic_sel 
    	train_dev=dirha_sim_$mic_sel 
    	train_test=dirha_real_$mic_sel
    	recog_set="dirha_sim_$mic_sel dirha_real_$mic_sel"
@@ -188,16 +189,14 @@ if [ ${stage} -le 1 ]; then
     	done
 
     done
-fi
 
-if [ ${stage} -le 1 ]; then
     echo "stage 1: Data concatenating ..."
     mkdir -p data/dirha_multistream/train_orig
-    cp data/tr05_cont_Beam_Circular_Array/* data/dirha_multistream/train_orig
+    cp data/${train_sel}_Beam_Circular_Array/* data/dirha_multistream/train_orig
     rm -r data/dirha_multistream/train_orig/feats.scp
     rm -r data/dirha_multistream/train_orig/cmvn.ark
     utils/data/copy_data_dir.sh data/dirha_multistream/train_orig data/dirha_multistream_train
-    paste-feats scp:data/tr05_cont_Beam_Circular_Array/feats.scp scp:data/tr05_cont_Beam_Linear_Array/feats.scp ark,scp:fbank/raw_fbank_pitch_dirha_multistream_train.ark,data/dirha_multistream_train/feats.scp
+    paste-feats scp:data/${train_sel}_Beam_Circular_Array/feats.scp scp:data/${train_sel}_Beam_Linear_Array/feats.scp ark,scp:fbank/raw_fbank_pitch_dirha_multistream_train.ark,data/dirha_multistream_train/feats.scp
     compute-cmvn-stats scp:data/dirha_multistream_train/feats.scp data/dirha_multistream_train/cmvn.ark
 
     mkdir -p data/dirha_multistream/dev_orig
@@ -289,7 +288,7 @@ fi
 lmexpdir=exp/train_rnnlm_${backend}_${lmtag}
 mkdir -p ${lmexpdir}
 
-if [[ ${stage} -le 3 && $use_lm == true ]]; then
+if [[ ${stage} -le -3 && $use_lm == true ]]; then
      echo "stage 3: LM Preparation"	    
 fi
 

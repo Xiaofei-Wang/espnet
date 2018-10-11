@@ -14,6 +14,7 @@
 # We'll create train_si84 after doing the feature extraction.
 
 lang_suffix=
+mic=$1
 
 echo "$0 $@"  # Print the command line for logging
 . utils/parse_options.sh || exit 1;
@@ -23,14 +24,13 @@ echo "$0 $@"  # Print the command line for logging
 echo "Preparing train and test data"
 srcdir=data/local/data
 
-for x in tr05_cont; do
-  mkdir -p data/$x
-  cp $srcdir/${x}_wav.scp data/$x/wav.scp || exit 1;
-  cp $srcdir/$x.txt data/$x/text || exit 1;
-  cp $srcdir/$x.spk2utt data/$x/spk2utt || exit 1;
-  cp $srcdir/$x.utt2spk data/$x/utt2spk || exit 1;
-  utils/filter_scp.pl data/$x/spk2utt $srcdir/spk2gender > data/$x/spk2gender || exit 1;
+for x in train_si284; do
+  mkdir -p data/${x}_$mic
+  cp $srcdir/${x}_wav.scp data/${x}_$mic/wav.scp || exit 1;
+  cp $srcdir/$x.txt data/${x}_$mic/text || exit 1;
+  cp $srcdir/$x.spk2utt data/${x}_$mic/spk2utt || exit 1;
+  cp $srcdir/$x.utt2spk data/${x}_$mic/utt2spk || exit 1;
+  utils/filter_scp.pl data/${x}_$mic/spk2utt $srcdir/spk2gender > data/${x}_$mic/spk2gender || exit 1;
 done
 
 echo "Succeeded in formatting data."
-
