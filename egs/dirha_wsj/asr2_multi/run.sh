@@ -142,12 +142,12 @@ if [ ${stage} -le 0 ]; then
     
 fi
 
+train_sel=train_si284
 if [ ${stage} -le 1 ]; then
     ### Task dependent. You have to design training and dev sets by yourself.
     ### But you can utilize Kaldi recipes in most cases
     echo "stage 1: Feature Generation"
     fbankdir=fbank
-    train_sel=train_si284
     # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
 
     for mic_sel in $mic; do
@@ -189,7 +189,9 @@ if [ ${stage} -le 1 ]; then
     	done
 
     done
+fi
 
+if [ ${stage} -le 1 ]; then
     echo "stage 1: Data concatenating ..."
     mkdir -p data/dirha_multistream/train_orig
     cp data/${train_sel}_Beam_Circular_Array/* data/dirha_multistream/train_orig
@@ -288,7 +290,7 @@ fi
 lmexpdir=exp/train_rnnlm_${backend}_${lmtag}
 mkdir -p ${lmexpdir}
 
-if [[ ${stage} -le -3 && $use_lm == true ]]; then
+if [[ ${stage} -le 3 && $use_lm == true ]]; then
      echo "stage 3: LM Preparation"	    
 fi
 
