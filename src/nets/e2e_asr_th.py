@@ -3165,28 +3165,6 @@ class Encoder(torch.nn.Module):
         '''
         if self.etype in ['blstm', 'blstmp', 'blstmss', 'blstmpbn', 'vgg', 'rcnn', 'rcnnNObn', 'rcnnDp', 'rcnnDpNObn']:
 
-#            if self.addgauss: # decoding stage #TODO hardcode the dim
-#                dims1 = list(range(40)) + list(range(80, 83))  # low frequency + 3 pitch
-#                dims2 = list(range(40, 80)) + list(range(80, 83))  # high frequency + 3 pitch
-#                xs_pad1 = xs_pad[:, :, dims1]
-#                xs_pad2 = xs_pad[:, :, dims2]
-#                gauss_dist = tdist.Normal(torch.tensor([self.addgauss_mean]), torch.tensor([self.addgauss_std]))
-#                if self.addgauss_type == 'low43':
-#                    gauss_noise = gauss_dist.sample(xs_pad1.size()).squeeze(len(xs_pad1.size()))
-#                    xs_pad1 += gauss_noise
-#                elif self.addgauss_type == 'high43':
-#                    gauss_noise = gauss_dist.sample(xs_pad2.size()).squeeze(len(xs_pad2.size()))
-#                    xs_pad2 += gauss_noise
-#                elif self.addgauss_type == 'all':
-#                    gauss_noise1 = gauss_dist.sample(xs_pad1.size()).squeeze(len(xs_pad1.size()))
-#                    gauss_noise2 = gauss_dist.sample(xs_pad2.size()).squeeze(len(xs_pad2.size()))
-#                    xs_pad1 += gauss_noise1
-#                    xs_pad2 += gauss_noise2
-#                else:
-#                    logging.error(
-#                        "Error: need to specify an appropriate addgauss type")
-#                    sys.exit()
-#                xs_pad = torch.cat((xs_pad1[:,:,:40],xs_pad2[:,:,:40],xs_pad1[:,:,40:]),2)
             if self.addgauss: # decoding stage #TODO hardcode the dim
                 dims1 = list(range(83)) # low frequency + 3 pitch
                 dims2 = list(range(83, 83 * 2))  # high frequency + 3 pitch
