@@ -3280,7 +3280,6 @@ class Encoder(torch.nn.Module):
             xs_pad, ilens = self.enc1(xs_pad, ilens)
 
             xs_pad = fill_padded_part(xs_pad, ilens, 0.0)
-
         elif self.etype in ['amiCH1BlstmpCH2Blstmp']:
             # xs_pad: utt x frame x dim(83)
             dims1 = list(range(83))  # array 1
@@ -3314,7 +3313,6 @@ class Encoder(torch.nn.Module):
             xs_pad2 = fill_padded_part(xs_pad2, ilens2, 0.0)
 
             return (xs_pad1, xs_pad2), (ilens1, ilens2)
-
         elif self.etype in ['amiCH1Blstmp']:
             # xs_pad: utt x frame x dim(83)
             dims1 = list(range(83))  # high frequency + 3 pitch
@@ -3325,7 +3323,6 @@ class Encoder(torch.nn.Module):
                 xs_pad += gauss_noise
             xs_pad, ilens = self.enc1(xs_pad, ilens)
             xs_pad = fill_padded_part(xs_pad, ilens, 0.0)
-
         elif self.etype in ['amiCH2Blstmp']:
             # xs_pad: utt x frame x dim(83)
             dims2 = list(range(83, 83 * 2))  # low frequency + 3 pitch
@@ -3336,7 +3333,6 @@ class Encoder(torch.nn.Module):
                 xs_pad += gauss_noise
             xs_pad, ilens = self.enc1(xs_pad, ilens)
             xs_pad = fill_padded_part(xs_pad, ilens, 0.0)
-
         elif self.etype in ['amiCH1VggblstmCH2Vggblstm']:
             # xs_pad: utt x frame x dim(83)
             dims1 = list(range(83))  # low frequency + 3 pitch
@@ -3345,7 +3341,7 @@ class Encoder(torch.nn.Module):
             xs_pad1, ilens1 = self.enc11(xs_pad[:, :, dims1], ilens)
             xs_pad1, ilens1 = self.enc12(xs_pad1, ilens1)
 
-            xs_pad2, ilens2 = self.enc21(xs_pad2, ilens)
+            xs_pad2, ilens2 = self.enc21(xs_pad[:, :, dims2], ilens)
             xs_pad2, ilens2 = self.enc22(xs_pad2, ilens2)
 
             xs_pad1 = fill_padded_part(xs_pad1, ilens1, 0.0)
