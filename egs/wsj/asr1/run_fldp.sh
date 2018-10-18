@@ -71,6 +71,7 @@ lm_epochs=20        # number of epochs
 lm_maxlen=40        # 150 for character LMs
 lm_resume=          # specify a snapshot file to resume LM training
 lmtag=              # tag for managing LMs
+lm_learnrate=1.0
 use_lm=true
 
 # decoding parameter
@@ -97,6 +98,7 @@ l2_dropout=0.5
 
 # for decoding only ; only works for multi case
 l2_weight=0.5
+ctc_l2w=0.5
 
 # add gaussian noise to the features (only works for encoder type: 'multiBandBlstmpBlstmp', 'blstm', 'blstmp', 'blstmss', 'blstmpbn', 'vgg', 'rcnn', 'rcnnNObn', 'rcnnDp', 'rcnnDpNObn')
 addgauss=false
@@ -115,10 +117,10 @@ set -e
 set -u
 set -o pipefail
 
-train_set=train_si284_fdlp
-train_dev=test_dev93_fdlp
-train_test=test_eval92_fdlp
-recog_set="test_dev93_fdlp test_eval92_fdlp"
+train_set=train_si284_mfcc_fdlp
+train_dev=test_dev93_mfcc_fdlp
+train_test=test_eval92_mfcc_fdlp
+recog_set="test_dev93_mfcc_fdlp test_eval92_mfcc_fdlp"
 
 if [ ${stage} -le 0 ]; then
     ### Task dependent. You have to make data the following preparation part by yourself.
@@ -197,6 +199,9 @@ fi
 # you can skip this and remove --rnnlm option in the recognition (stage 5)
 if [ -z ${lmtag} ]; then
     lmtag=${lm_layers}layer_unit${lm_units}_${lm_opt}_bs${lm_batchsize}
+    if [ "$lm_opt" == "sgd" ]; then
+        lmtag=${lmtag}_lr${lm_learnrate}
+    fi
     if [ $use_wordlm = true ]; then
         lmtag=${lmtag}_word${lm_vocabsize}
     fi
@@ -252,6 +257,7 @@ if [[ ${stage} -le 3 && $use_lm == true ]]; then
         --batchsize ${lm_batchsize} \
         --epoch ${lm_epochs} \
         --maxlen ${lm_maxlen} \
+        --learnrate ${lm_learnrate} \
         --dict ${lmdict}
 fi
 
@@ -259,6 +265,9 @@ if [ -z ${tag} ]; then
     expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}_shareCtc${share_ctc}
 
     if [ $atype == 'enc2_add_l2dp' ]; then
+        expdir=${expdir}_l2attdp${l2_dropout}
+    fi
+    if [ $atype == 'enc2_add_l2dpnew' ]; then
         expdir=${expdir}_l2attdp${l2_dropout}
     fi
 
@@ -328,6 +337,10 @@ if [ ${stage} -le 5 ]; then
     (
         decode_dir=decode_${rtask}_beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}
 
+        if [ "${ctc_l2w}" != "0.5" ] && [ "${num_enc}" != "1" ]; then
+            decode_dir=${decode_dir}_ctcl2w${ctc_l2w}
+        fi
+
         if [ $use_lm = true ]; then
             decode_dir=${decode_dir}_rnnlm${lm_weight}_${lmtag}
             if [ $use_wordlm = true ]; then
@@ -367,6 +380,7 @@ if [ ${stage} -le 5 ]; then
             --minlenratio ${minlenratio} \
             --ctc-weight ${ctc_weight} \
             --lm-weight ${lm_weight} \
+            --ctc-l2w ${ctc_l2w} \
             $recog_opts &
         wait
 

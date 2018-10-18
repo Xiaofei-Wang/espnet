@@ -211,8 +211,8 @@ class E2E(torch.nn.Module):
         subsample = np.ones(args.elayers + 1, dtype=np.int)
         if args.etype in ['blstmp', 'blstmpbn', 'multiVggblstmBlstmp', 'multiVggdil2blstmBlstmp',
                           'multiBandBlstmpBlstmp', 'highBandBlstmp', 'lowBandBlstmp', 'multiVgg8blstmBlstmp',
-                          'multiVggblstmpBlstmp', 'multiVggblstmpBlstmpFixed4', 'multiVggblstmBlstmpFixed4',
-                          'amiCH1BlstmpCH2Blstmp', 'amiCH1Blstmp', 'amiCH2Blstmp']:
+                          'multiVggblstmpBlstmp', 'multiVggblstmpBlstmpFixed4', 'multiVggblstmBlstmpFixed4', 'multiVggblstmpFixed4Blstmp'
+                          'amiCH1BlstmpCH2Blstmp', 'amiCH1Blstmp', 'amiCH2Blstmp', 'sMfccBlstmpFdlpBlstmp', 'sMfccBlstmp']:
             ss = args.subsample.split("_")
             for j in range(min(args.elayers + 1, len(ss))):
                 subsample[j] = int(ss[j])
@@ -290,6 +290,16 @@ class E2E(torch.nn.Module):
         elif args.atype == 'enc2_add_l2dp':
             self.att = Enc2AttAdd(args.eprojs, args.dunits,
                                   args.adim, num_enc=args.num_enc, l2_dropout=args.l2_dropout)
+        elif args.atype == 'enc2_add_l2dpnew':
+            self.att = Enc2AttAddStreamDP(args.eprojs, args.dunits,
+                                  args.adim, num_enc=args.num_enc, l2_dropout=args.l2_dropout)
+        elif args.atype == 'enc2_add_l2w0.5dpnew':
+            if 'l2_weight' not in vars(args):  # training stage
+                self.att = Enc2AttAddStreamDP(args.eprojs, args.dunits,
+                                      args.adim, num_enc=args.num_enc, l2_weight=0.5, l2_dropout=args.l2_dropout)
+            else:  # decoding stage
+                self.att = Enc2AttAddStreamDP(args.eprojs, args.dunits,
+                                      args.adim, num_enc=args.num_enc, l2_weight=args.l2_weight, l2_dropout=args.l2_dropout)
 
         elif args.atype == 'enc2_add_linproj':
             self.att = Enc2AttAddLinProj(args.eprojs, args.dunits,
@@ -1027,6 +1037,177 @@ class Enc2AttAdd(torch.nn.Module):
 
         if self.l2_dropout is not None:  # TODO: (0,0) situation
             self.enc_h_l2 = self.dropout_l2(self.enc_h_l2.unsqueeze(3)).squeeze(3)
+
+        # level 2 attention
+        if self.l2_weight is None:
+            self.h_length_l2 = self.num_enc
+            self.pre_compute_enc_h_l2 = self.mlp_enc_l2(self.enc_h_l2)
+
+            # dec_z_tiled: utt x frame x att_dim
+            dec_z_tiled_l2 = self.mlp_dec_l2(dec_z).view(batch, 1, self.att_dim)
+
+            # dot with gvec
+            # utt x frame x att_dim -> utt x frame
+            # NOTE consider zero padding when compute w.
+            e_l2 = self.gvec_l2(torch.tanh(
+                self.pre_compute_enc_h_l2 + dec_z_tiled_l2)).squeeze(2)
+
+            # NOTE consider zero padding when compute w.
+            if self.l2_mask is None:
+                self.l2_mask = to_cuda(self, make_pad_mask([self.num_enc]))
+            e_l2.masked_fill_(self.l2_mask, -float('inf'))
+
+            w_l2 = F.softmax(scaling * e_l2, dim=1) # TODO What if no scaling????
+        else:  # fixed l2 weight
+            w_l2 = att_prev[1]
+
+        # weighted sum over flames
+        # utt x hdim
+        # NOTE equivalent to c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+        # c_l2 = torch.sum(self.enc_h_l2 * w_l2.view(batch, self.h_length_l2, 1), dim=1)
+        c_l2 = torch.matmul(w_l2.unsqueeze(1), self.enc_h_l2).squeeze(1)
+        # logging.info(self.__class__.__name__ + ' level two attention weight: ')
+        # logging.warning(w_l2[0][0])  # print the l2-weight for the first stream
+
+        return c_l2, [w_l1, w_l2]
+
+
+class Enc2AttAddStreamDP(torch.nn.Module):
+    '''add attention with 2 encoder streams
+
+    :param int eprojs: # projection-units of encoder
+    :param int dunits: # units of decoder
+    :param int k : attention dimension
+    :param int num_enc: # of encoder stream
+    :param int l2_dropout: flag to apply level-2 dropout
+    :param int l2_weight: fix the first encoder with l2_weight, second one has 1-l2_weight. default: None, do adaptive l2_weight learning.
+    '''
+
+    # __init__ will define the architecture of the attention model
+    # chnage the l2Weight when recog
+    def __init__(self, eprojs, dunits, att_dim, num_enc=2, l2_dropout=None, l2_weight=None):
+        super(Enc2AttAddStreamDP, self).__init__()
+
+        # level 1 attention: one attention mechanism for each stream
+
+        for idx in range(num_enc):
+            setattr(self, "mlp_enc%d_l1" % idx, torch.nn.Linear(eprojs, att_dim))
+            setattr(self, "mlp_dec%d_l1" % idx, torch.nn.Linear(dunits, att_dim, bias=False))
+            setattr(self, "gvec%d_l1" % idx, torch.nn.Linear(att_dim, 1))
+
+        if l2_weight is None:  # fixed l2 weight
+            # level 2 attention: one attention mechanism for stream selection
+            self.mlp_enc_l2 = torch.nn.Linear(eprojs, att_dim)
+            self.mlp_dec_l2 = torch.nn.Linear(dunits, att_dim, bias=False)
+            self.gvec_l2 = torch.nn.Linear(att_dim, 1)
+
+        if l2_dropout is not None:
+            self.dropout_l2_func = asr_utils.streamdropout
+
+        self.dunits = dunits
+        self.eprojs = eprojs
+        self.att_dim = att_dim
+        self.h_length_l1 = None
+        self.h_length_l2 = None
+        self.enc_h_l1 = None
+        self.enc_h_l2 = None
+        self.pre_compute_enc_h_l1 = None
+        self.pre_compute_enc_h_l2 = None
+        self.num_enc = num_enc
+        self.l2_weight = l2_weight
+        self.l2_dropout = l2_dropout
+        self.l2_mask = None
+        self.mask = None
+
+    def reset(self):
+        '''reset states'''
+        self.h_length_l1 = None
+        self.h_length_l2 = None
+        self.enc_h_l1 = None
+        self.enc_h_l2 = None
+        self.pre_compute_enc_h_l1 = None
+        self.pre_compute_enc_h_l2 = None
+        self.l2_mask =None
+        self.mask = None
+
+    def forward(self, enc_hs_pad, enc_hs_len, dec_z, att_prev, scaling=2.0):
+        '''AttLoc forward
+
+        :param Variable enc_hs_pad: list of padded encoder hidden state (list(B x T_max x D_enc))
+        :param list enc_h_len: list of padded encoder hidden state lenght list((B))
+        :param Variable dec_z: docoder hidden state (B x D_dec)
+        :param Variable att_prev: list of previous attetion weight list(B x T_max)
+        :param float scaling: scaling parameter before applying softmax
+        :return: attentioin weighted encoder state (B, D_enc)
+        :rtype: Variable
+        :return: list of previous attentioin weights [list(B x T_max), B x T_max] --> l1 and l2
+        :rtype: Variable
+        '''
+
+        # level 1 attention
+        batch = len(enc_hs_pad[0])
+        # pre-compute all h outside the decoder loop
+
+        if self.pre_compute_enc_h_l1 is None:
+            self.enc_h_l1 = enc_hs_pad  # list (utt x frame x hdim)
+            self.h_length_l1 = [self.enc_h_l1[idx].size(1) for idx in range(self.num_enc)]
+            # utt x frame x att_dim
+            self.pre_compute_enc_h_l1 = [getattr(self, "mlp_enc%d_l1" % idx)(self.enc_h_l1[idx]) for idx in
+                                         range(self.num_enc)]
+
+        if dec_z is None:
+            dec_z = enc_hs_pad.new_zeros(batch, self.dunits)
+        else:
+            dec_z = dec_z.view(batch, self.dunits)
+
+        # initialize attention weight with uniform dist.
+        if att_prev is None:
+            att_prev_l1 = None
+
+            if self.l2_weight is None:
+                att_prev_l2 = [enc_hs_pad[0].new(self.num_enc).fill_(1.0 / self.num_enc) for _ in range(batch)]
+
+            else:  # fixed l2 weight
+                att_prev_l2 = []
+                w_np = np.array([self.l2_weight, 1 - self.l2_weight])  # hard coded for two encoders
+                for _ in range(batch):
+                    w = torch.from_numpy(w_np).type(enc_hs_pad[0].type())
+                    att_prev_l2 += [w]
+
+            att_prev_l2 = pad_list(att_prev_l2, 0)  # utt x frame_max
+            att_prev = [att_prev_l1, att_prev_l2]  # [[att_l1_1, att_l1_2, ...], att_l2_1]
+
+        # dec_z_tiled: utt x frame x att_dim
+        dec_z_tiled_l1 = [getattr(self, "mlp_dec%d_l1" % idx)(dec_z).view(batch, 1, self.att_dim) for idx in
+                          range(self.num_enc)]
+
+        # dot with gvec
+        # list(utt x frame x att_dim) -> list(utt x frame)
+        # NOTE consider zero padding when compute w.
+        e_l1 = [getattr(self, "gvec%d_l1" % idx)(torch.tanh(
+            self.pre_compute_enc_h_l1[idx] + dec_z_tiled_l1[idx])).squeeze(2) for idx in range(self.num_enc)]
+
+        # NOTE consider zero padding when compute w.
+        if self.mask is None:
+            self.mask = [to_cuda(self, make_pad_mask(enc_hs_len[idx]))  for idx in range(self.num_enc)]
+        e_l1 = [e_l1[idx].masked_fill_(self.mask[idx], -float('inf')) for idx in range(self.num_enc)]
+
+
+        w_l1 = [F.softmax(scaling * e_l1[idx], dim=1) for idx in range(self.num_enc)]
+
+        # weighted sum over flames
+        # list (utt x hdim)
+        # NOTE equivalent to c = torch.sum(self.enc_h * w.view(batch, self.h_length, 1), dim=1)
+        # self.enc_h_l2 = [torch.sum(self.enc_h_l1[idx] * w_l1[idx].view(batch, self.h_length_l1[idx], 1), dim=1) for idx in
+        #                  range(self.num_enc)]
+        self.enc_h_l2 = [torch.matmul(w_l1[idx].unsqueeze(1), self.enc_h_l1[idx]).squeeze(1) for idx in
+                         range(self.num_enc)]
+        self.enc_h_l2 = torch.stack(self.enc_h_l2, dim=1)  # utt x numEncStream x hdim
+
+        if self.l2_dropout is not None:  # TODO: (0,0) situation
+            flag_training = getattr(self, "mlp_enc%d_l1" % idx).training
+            self.enc_h_l2 = self.dropout_l2_func(self.enc_h_l2, p=self.l2_dropout, training=flag_training)
+
 
         # level 2 attention
         if self.l2_weight is None:
@@ -2618,6 +2799,7 @@ class Decoder(torch.nn.Module):
                             self.num_enc)])  # ctc_scores=[score_stream1, score_stream2, ..., score_streamN], ctc_states = [state1, state2, ..., stateN] where stateN is beam x frame
                         ctc_2_scores = np.stack([ctc_scores[idx] - hyp['ctc_score_prev'][idx] for idx in range(self.num_enc)])
 
+                        # ctc_l2w = att_w[1][0][0]
                         ctc_2_scores[0, :] = ctc_2_scores[0, :] * ctc_l2w
                         ctc_2_scores[1, :] = ctc_2_scores[1, :] * (1-ctc_l2w)
 
@@ -2811,7 +2993,7 @@ class Decoder(torch.nn.Module):
                 att_ws_sorted_by_head += [att_ws_head]
             att_ws = torch.stack(att_ws_sorted_by_head, dim=1).cpu().numpy()
         # elif isinstance(self.att, (Enc2AttAdd, Enc2AttLoc)):
-        elif isinstance(self.att, (Enc2AttAdd, Enc2AttAddLinProj)):
+        elif isinstance(self.att, (Enc2AttAdd, Enc2AttAddLinProj, Enc2AttAddStreamDP)):
             # att_ws => list(len(odim)) of [[att1_l1, att2_l1, ...,attN_l1], att_l2]; N: numstreams
             # list of [utt x (NumEnc+1) x T_max]
             att_ws = [pad_list([a.transpose(0, 1) for a in aw[0] + [aw[1]]], 0).transpose(0, 2).transpose(1, 2) for aw
@@ -3018,6 +3200,10 @@ class Encoder(torch.nn.Module):
             self.enc1 = RCNN(idim=idim, eprojs=eprojs, block=BasicBlock_BnReluConv, inplanes=in_channel, flag_bn=True,
                              flag_relu=True, flag_dp=False)
             logging.info('Use RCNN for encoder')
+        elif etype == 'rcnnBnNoAffine':
+            self.enc1 = RCNN(idim=idim, eprojs=eprojs, block=BasicBlock_BnReluConv, inplanes=in_channel, flag_bn=True,
+                             flag_relu=True, flag_dp=False, flag_bn_affine=False)
+            logging.info('Use RCNN for encoder')
         elif etype == 'rcnnNObn':
             self.enc1 = RCNN(idim=idim, eprojs=eprojs, block=BasicBlock_BnReluConv, inplanes=in_channel, flag_bn=False,
                              flag_relu=True, flag_dp=False)
@@ -3048,6 +3234,21 @@ class Encoder(torch.nn.Module):
             self.enc21 = BLSTMP(idim, elayers, eunits,
                                 eprojs, subsample, dropout)
             logging.info('Multi-Encoder: VGGBLSTMP, BLSTMP for encoders')
+
+        elif etype == 'multiVggblstmpFixed4Blstmp':
+            self.enc11 = VGG(in_channels=in_channel)
+            self.enc12 = BLSTMP(get_maxpooling2_odim(idim, in_channel=in_channel),
+                                4, 320, 320,
+                                subsample=np.array([1, 1, 1, 1, 1]).astype(int), dropout=0.0)
+            self.enc21 = BLSTMP(idim, elayers, eunits,
+                                eprojs, subsample, dropout)
+            logging.info('Multi-Encoder: VGGBLSTMP fixed, BLSTMP for encoders')
+
+        elif etype == 'multiVggBlstmp':
+            self.enc1 = VGGOnly(idim=idim, eprojs=eprojs, in_channels=in_channel,)
+            self.enc2 = BLSTMP(idim, elayers, eunits,
+                                eprojs, subsample, dropout)
+            logging.info('Multi-Encoder: VGGonly, BLSTMP for encoders')
 
         elif etype == 'multiVggblstmBlstmpFixed4':
             self.enc11 = VGG(in_channels=in_channel)
@@ -3109,6 +3310,20 @@ class Encoder(torch.nn.Module):
                                eprojs, subsample, dropout)  # 40+3 pitch
             logging.info('High-Band: BLSTMP(40HF+3Pitch) for encoders')
 
+        # fdlp
+        elif etype == 'sMfccBlstmpFdlpBlstmp':
+            self.enc1 = BLSTMP(13, elayers, eunits,
+                               eprojs, subsample, dropout)  # 40+3 pitch
+
+            self.enc2 = BLSTMP(105, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('MFCC+FDLP: BLSTMP(MFCC), BLSTMP(FDLP) for encoders')
+        elif etype == 'sMfccBlstmp':
+            self.enc1 = BLSTMP(13, elayers, eunits,
+                               eprojs, subsample, dropout)
+            logging.info('MFCC: BLSTMP(MFCC) for encoders')
+
+
         # ami
         elif etype == 'amiCH1BlstmpCH2Blstmp':
             self.enc1 = BLSTMP(83, elayers, eunits,
@@ -3163,7 +3378,7 @@ class Encoder(torch.nn.Module):
         :return: batch of hidden state sequences (B, Tmax, erojs)
         :rtype: torch.Tensor
         '''
-        if self.etype in ['blstm', 'blstmp', 'blstmss', 'blstmpbn', 'vgg', 'rcnn', 'rcnnNObn', 'rcnnDp', 'rcnnDpNObn']:
+        if self.etype in ['blstm', 'blstmp', 'blstmss', 'blstmpbn', 'vgg', 'rcnn', 'rcnnNObn', 'rcnnDp', 'rcnnDpNObn', 'rcnnBnNoAffine']:
 
             if self.addgauss: # decoding stage #TODO hardcode the dim
                 dims1 = list(range(83)) # low frequency + 3 pitch
@@ -3207,7 +3422,7 @@ class Encoder(torch.nn.Module):
             xs_pad = fill_padded_part(xs_pad, ilens, 0.0)
 
         elif self.etype in ['multiVggblstmBlstmp', 'multiVggdil2blstmBlstmp', 'multiVgg8blstmBlstmp',
-                            'multiVggblstmpBlstmp', 'multiVggblstmpBlstmpFixed4', 'multiVggblstmBlstmpFixed4']:
+                            'multiVggblstmpBlstmp', 'multiVggblstmpFixed4Blstmp','multiVggblstmpBlstmpFixed4', 'multiVggblstmBlstmpFixed4']:
             xs_pad1, ilens1 = self.enc11(xs_pad, ilens)
             xs_pad1, ilens1 = self.enc12(xs_pad1, ilens1)
             xs_pad2, ilens2 = self.enc21(xs_pad, ilens)
@@ -3216,7 +3431,7 @@ class Encoder(torch.nn.Module):
             xs_pad2 = fill_padded_part(xs_pad2, ilens2, 0.0)
 
             return (xs_pad1, xs_pad2), (ilens1, ilens2)
-        elif self.etype in ['multiBlstmpBlstmp4']:
+        elif self.etype in ['multiBlstmpBlstmp4','multiVggBlstmp' ]:
             xs_pad1, ilens1 = self.enc1(xs_pad, ilens)
             xs_pad2, ilens2 = self.enc2(xs_pad, ilens)
 
@@ -3280,6 +3495,28 @@ class Encoder(torch.nn.Module):
             xs_pad, ilens = self.enc1(xs_pad, ilens)
 
             xs_pad = fill_padded_part(xs_pad, ilens, 0.0)
+
+        elif self.etype in ['sMfccBlstmpFdlpBlstmp']:
+            # xs_pad: utt x frame x dim(83)
+            dims1 = list(range(13))   # mfcc
+            dims2 = list(range(13, 13+105))   # fdlp
+
+            xs_pad1 = xs_pad[:, :, dims1]
+            xs_pad2 = xs_pad[:, :, dims2]
+
+            xs_pad1, ilens1 = self.enc1(xs_pad1, ilens)
+            xs_pad2, ilens2 = self.enc2(xs_pad2, ilens)
+
+            xs_pad1 = fill_padded_part(xs_pad1, ilens1, 0.0)
+            xs_pad2 = fill_padded_part(xs_pad2, ilens2, 0.0)
+
+            return (xs_pad1, xs_pad2), (ilens1, ilens2)
+        elif self.etype in ['sMfccBlstmp']:
+            # xs_pad: utt x frame x dim(83)
+            dims1 = list(range(13))  # mfcc
+            xs_pad, ilens = self.enc1(xs_pad[:, :, dims1], ilens)
+            xs_pad = fill_padded_part(xs_pad, ilens, 0.0)
+
         elif self.etype in ['amiCH1BlstmpCH2Blstmp']:
             # xs_pad: utt x frame x dim(83)
             dims1 = list(range(83))  # array 1
@@ -4060,12 +4297,12 @@ def conv3x3(inplanes, planes, stride=(1, 1), padding=(1, 1), dilation=(1, 1), bi
 
 class BasicBlock_BnReluConv(torch.nn.Module):
 
-    def __init__(self, inplanes, planes, stride=(1, 1), downsample=None, flag_bn=True, flag_relu=True, flag_dp=False):
+    def __init__(self, inplanes, planes, stride=(1, 1), downsample=None, flag_bn=True, flag_relu=True, flag_dp=False, flag_bn_affine=True):
         super(BasicBlock_BnReluConv, self).__init__()
 
         if flag_bn:
-            self.batchnorm1 = torch.nn.BatchNorm2d(inplanes)
-            self.batchnorm2 = torch.nn.BatchNorm2d(planes)
+            self.batchnorm1 = torch.nn.BatchNorm2d(inplanes, affine=flag_bn_affine)
+            self.batchnorm2 = torch.nn.BatchNorm2d(planes, affine=flag_bn_affine)
 
         if flag_relu:
             self.relu = torch.nn.ReLU(inplace=True)
@@ -4112,20 +4349,20 @@ class RCNN(torch.nn.Module):
     """
 
     def __init__(self, idim, block, eprojs, layers=(2, 2, 2, 2), expansion=2, inplanes=1, flag_bn=True, flag_relu=True,
-                 flag_dp=False):
+                 flag_dp=False, flag_bn_affine=True):
         self.inplanes_updated = 32
         super(RCNN, self).__init__()
 
         self.conv1 = torch.nn.Conv2d(1, 32, kernel_size=(11, 41), stride=(2, 2), padding=(5, 20), bias=False)
 
         self.layer1 = self._make_layer(block, 64 * expansion, layers[0], flag_bn=flag_bn, flag_relu=flag_relu,
-                                       flag_dp=flag_dp)
+                                       flag_dp=flag_dp, flag_bn_affine=flag_bn_affine)
         self.layer2 = self._make_layer(block, 128 * expansion, layers[1], flag_bn=flag_bn, flag_relu=flag_relu,
-                                       flag_dp=flag_dp)
+                                       flag_dp=flag_dp, flag_bn_affine=flag_bn_affine)
         self.layer3 = self._make_layer(block, 256 * expansion, layers[2], stride=(1, 2), flag_bn=flag_bn,
-                                       flag_relu=flag_relu, flag_dp=flag_dp)
+                                       flag_relu=flag_relu, flag_dp=flag_dp, flag_bn_affine=flag_bn_affine)
         self.layer4 = self._make_layer(block, 512 * expansion, layers[3], stride=(2, 2), flag_bn=flag_bn,
-                                       flag_relu=flag_relu, flag_dp=flag_dp)
+                                       flag_relu=flag_relu, flag_dp=flag_dp, flag_bn_affine=flag_bn_affine)
 
         # stride, padding, dilation, kernel_size
         self.params_freq = [[2, 20, 1, 41], [1, 1, 1, 3], [1, 1, 1, 3], [2, 1, 1, 3], [2, 1, 1, 3]]
@@ -4143,7 +4380,7 @@ class RCNN(torch.nn.Module):
         #         nn.init.constant_(m.weight, 1)
         #         nn.init.constant_(m.bias, 0)
 
-    def _make_layer(self, block, planes, blocks, stride=(1, 1), flag_bn=True, flag_relu=True, flag_dp=False):
+    def _make_layer(self, block, planes, blocks, stride=(1, 1), flag_bn=True, flag_relu=True, flag_dp=False, flag_bn_affine=True):
         downsample = None
 
         if stride[0] != 1 or stride[1] != 1 or self.inplanes_updated != planes:
@@ -4151,11 +4388,11 @@ class RCNN(torch.nn.Module):
 
         layers = []
         layers.append(block(self.inplanes_updated, planes, stride, downsample, flag_bn=flag_bn, flag_relu=flag_relu,
-                            flag_dp=flag_dp))
+                            flag_dp=flag_dp, flag_bn_affine=flag_bn_affine))
 
         self.inplanes_updated = planes
         for i in range(1, blocks):
-            layers.append(block(self.inplanes_updated, planes, flag_bn=flag_bn, flag_relu=flag_relu, flag_dp=flag_dp))
+            layers.append(block(self.inplanes_updated, planes, flag_bn=flag_bn, flag_relu=flag_relu, flag_dp=flag_dp, flag_bn_affine=flag_bn_affine))
 
         return torch.nn.Sequential(*layers)
 
