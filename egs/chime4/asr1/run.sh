@@ -124,7 +124,9 @@ train_dev=dt05_multi_isolated_1ch_track
 #dt05_real_beamformit_2mics dt05_simu_beamformit_2mics et05_real_beamformit_2mics et05_simu_beamformit_2mics \
 #dt05_real_beamformit_5mics dt05_simu_beamformit_5mics et05_real_beamformit_5mics et05_simu_beamformit_5mics \
 #"
-recog_set="dt05_real_isolated_1ch_track dt05_simu_isolated_1ch_track et05_real_isolated_1ch_track et05_simu_isolated_1ch_track"
+#recog_set="dt05_real_isolated_1ch_track dt05_simu_isolated_1ch_track et05_real_isolated_1ch_track et05_simu_isolated_1ch_track"
+
+recog_set="et05_real_isolated_1ch_track et05_simu_isolated_1ch_track"
 
 if [ ${stage} -le 0 ]; then
     ### Task dependent. You have to make the following data preparation part by yourself.
@@ -295,6 +297,9 @@ if [ -z ${tag} ]; then
     expdir=exp/${train_set}_${backend}_${etype}_e${elayers}_subsample${subsample}_unit${eunits}_proj${eprojs}_d${dlayers}_unit${dunits}_${atype}${adim}_aconvc${aconv_chans}_aconvf${aconv_filts}_mtlalpha${mtlalpha}_${opt}_bs${batchsize}_mli${maxlen_in}_mlo${maxlen_out}_shareCtc${share_ctc}
 
     if [ $atype == 'enc2_add_l2dp' ]; then
+        expdir=${expdir}_l2attdp${l2_dropout}
+    fi
+    if [ $atype == 'enc2_add_l2dpnew' ]; then
         expdir=${expdir}_l2attdp${l2_dropout}
     fi
 

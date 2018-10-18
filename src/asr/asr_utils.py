@@ -522,3 +522,72 @@ def _sgd_lr_decay(trainer, lr_decay):
         for p in optimizer.param_groups:
             p['lr'] *= lr_decay
             logging.info('sgd lr decayed to ' + str(p["lr"]))
+
+
+from torch.autograd.function import InplaceFunction
+# stream dropoout
+class StreamDropout(InplaceFunction):
+
+    @staticmethod
+    def _make_noise(input):
+        # input nbatch x 2 x dim
+        nbatch, nStream, dim = input.shape
+        noise = input.new_zeros([1000,nStream])
+        return noise
+
+    @staticmethod
+    def symbolic(g, input, p=0.5, train=False, inplace=False):
+        # See Note [Export inplace]
+        r, _ = g.op("StreamDropout", input, ratio_f=p, is_test_i=not train, outputs=2)
+        return r
+
+    @classmethod
+    def forward(cls, ctx, input, p=0.5, train=False, inplace=False):
+        if p < 0 or p > 1:
+            raise ValueError("dropout probability has to be between 0 and 1, "
+                             "but got {}".format(p))
+        # dropout rate for each stream
+        ctx.p = p
+        # dropout rate for each stream after filtering out all zeros case
+        ctx.p_filtered = p * 1.0 / (2-p)
+        # combination rate for [1,1]; then p([1,0]) = p([0,1]) = (1 - rate)/2
+        ctx.rate = (1-p) *1.0/(1+p)
+
+        ctx.train = train
+        ctx.inplace = inplace
+
+        if ctx.p == 0 or not ctx.train:
+            return input
+
+        if ctx.inplace:
+            ctx.mark_dirty(input)
+            output = input
+        else:
+            output = input.clone()
+
+        ctx.noise = cls._make_noise(input)
+        # 0
+        if ctx.p == 1:
+            ctx.noise.fill_(0)
+        else:
+            ctx.noise.bernoulli_(1 - ctx.p).div_(1 - ctx.p_filtered)
+
+        # filter [0,0]
+        noise_filtered = ctx.noise[(torch.sum(ctx.noise,dim=1) != 0).nonzero().squeeze(1),:][:input.shape[0],:].unsqueeze(2)
+        ctx.noise_filtered = noise_filtered.expand_as(input)
+
+        output.mul_(ctx.noise_filtered)
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if ctx.p > 0 and ctx.train:
+            return grad_output.mul(ctx.noise_filtered), None, None, None
+        else:
+            return grad_output, None, None, None
+
+
+
+def streamdropout(input, p=0.5, training=False, inplace=False):
+    return StreamDropout.apply(input, p, training, inplace)
