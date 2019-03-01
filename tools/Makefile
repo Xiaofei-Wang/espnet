@@ -7,7 +7,7 @@ CUPY_VERSION := 5.0.0
 # PyTorch version: 0.4.1 or 1.0.0
 TH_VERSION := 1.0.0
 # Use a prebuild Kaldi to omit the installation
-KALDI :=
+KALDI := /export/b18/asubraman/espnet_master/tools/kaldi_github
 
 # Both Miniconda2/3 can install any Python versions
 CONDA_URL := https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh

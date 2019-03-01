@@ -11,7 +11,7 @@ from espnet.nets.pytorch_backend.frontends.beamformer \
     import get_power_spectral_density_matrix
 from espnet.nets.pytorch_backend.frontends.mask_estimator import MaskEstimator
 from torch_complex.tensor import ComplexTensor
-
+import pudb
 
 class DNN_Beamformer(torch.nn.Module):
     """DNN mask based Beamformer
@@ -64,6 +64,7 @@ class DNN_Beamformer(torch.nn.Module):
         # data (B, T, C, F) -> (B, F, C, T)
         data = data.permute(0, 3, 2, 1)
 
+        pudb.set_trace()
         (speech, noise), _ = self.mask(data, ilens)
 
         psd_speech = get_power_spectral_density_matrix(data, speech)

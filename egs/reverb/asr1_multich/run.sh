@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2017 Johns Hopkins University (Shinji Watanabe)
+# Copyright 2018 Johns Hopkins University (Shinji Watanabe)
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
 . ./path.sh
@@ -14,26 +14,25 @@ debugmode=1
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
 verbose=0      # verbose option
 resume=        # Resume the training from snapshot
+stop_stage=4
 
 # configuration path
 preprocess_conf=conf/preprocess.json
 
 # network architecture
 use_beamformer=true
-use_beamformer=false
-use_wpe=false
 use_wpe=true
-use_dnn_mask_for_wpe=false
 use_dnn_mask_for_wpe=true
 blayers=2
 wlayers=2
 
+# network architecture
 # encoder related
 etype=vggblstmp     # encoder architecture type
 elayers=3
 eunits=1024
 eprojs=1024
-subsample=1_1_1 # skip every n frame from input to nth layers
+subsample=1_2_2_1_1 # skip every n frame from input to nth layers
 # decoder related
 dlayers=1
 dunits=1024
@@ -47,15 +46,15 @@ aconv_filts=100
 mtlalpha=0.5
 
 # minibatch related
-batchsize=10
-maxlen_in=600  # if input length  > maxlen_in, batchsize is automatically reduced
+batchsize=6
+maxlen_in=500  # if input length  > maxlen_in, batchsize is automatically reduced
 maxlen_out=150 # if output length > maxlen_out, batchsize is automatically reduced
 
 # optimization related
 sortagrad=0 # Feed samples from shortest to longest ; -1: enabled for all epochs, 0: disabled, other: enabled for 'other' epochs
 opt=adadelta
-epochs=12
-patience=0
+epochs=10
+patience=3
 
 # rnnlm related
 use_wordlm=true     # false means to train/use a character LM
@@ -73,7 +72,7 @@ lmtag=              # tag for managing LMs
 
 # decoding parameter
 lm_weight=1.0
-beam_size=20
+beam_size=30
 penalty=0
 maxlenratio=0.0
 minlenratio=0.0
@@ -84,9 +83,11 @@ recog_model=model.acc.best # set a model to be used for decoding: 'model.acc.bes
 samp_prob=0.0
 
 # data
-chime4_data=/export/corpora4/CHiME4/CHiME3 # JHU setup
+reverb=/export/corpora5/REVERB_2014/REVERB    # JHU setup
+wsjcam0=/export/corpora3/LDC/LDC95S24/wsjcam0 # JHU setup
 wsj0=/export/corpora5/LDC/LDC93S6B            # JHU setup
 wsj1=/export/corpora5/LDC/LDC94S13B           # JHU setup
+wavdir=${PWD}/wav # place to store WAV files
 
 # exp tag
 tag="" # tag for managing experiments.
@@ -102,66 +103,59 @@ set -e
 set -u
 set -o pipefail
 
-train_set=tr05_multi_noisy_si284 # tr05_multi_noisy (original training data) or tr05_multi_noisy_si284 (add si284 data)
-train_dev=dt05_multi_isolated_6ch_track
-recog_set="dt05_real_isolated_6ch_track dt05_simu_isolated_6ch_track et05_real_isolated_6ch_track et05_simu_isolated_6ch_track"
+train_set=tr_simu_8ch_si284
+train_dev=dt_multi_8ch
+recog_set="dt_real_8ch dt_simu_8ch et_real_8ch et_simu_8ch"
 
-if [ ${stage} -le 0 ]; then
-    ## Task dependent. You have to make the following data preparation part by yourself.
-    # But you can utilize Kaldi recipes in most cases
+if [ ${stage} -le 0 ] && [ ${stop_stage} -ge 0 ]; then
+    ### Task dependent. You have to make the following data preparation part by yourself.
+    ### But you can utilize Kaldi recipes in most cases
+    wavdir=${PWD}/wav # set the directory of the multi-condition training WAV files to be generated
     echo "stage 0: Data preparation"
-    wsj0_data=${chime4_data}/data/WSJ0
-    local/clean_wsj0_data_prep.sh ${wsj0_data}
-    local/clean_chime4_format_data.sh
-    echo "prepartion for chime4 data"
-    local/real_noisy_chime4_data_prep.sh ${chime4_data}
-    local/simu_noisy_chime4_data_prep.sh ${chime4_data}
-    echo "test data for 6ch track"
-    local/real_enhan_chime4_data_prep.sh isolated_6ch_track ${chime4_data}/data/audio/16kHz/isolated_6ch_track
-    local/simu_enhan_chime4_data_prep.sh isolated_6ch_track ${chime4_data}/data/audio/16kHz/isolated_6ch_track
-
+    #local/generate_data.sh --wavdir ${wavdir} ${wsjcam0}
+    local/prepare_simu_data.sh --wavdir ${wavdir} ${reverb} ${wsjcam0}
+    local/prepare_real_data.sh --wavdir ${wavdir} ${reverb}
+    
     # Additionally use WSJ clean data. Otherwise the encoder decoder is not well trained
     local/wsj_data_prep.sh ${wsj0}/??-{?,??}.? ${wsj1}/??-{?,??}.?
     local/wsj_format_data.sh
 fi
 
-if [ ${stage} -le 1 ]; then
+if [ ${stage} -le 1 ] && [ ${stop_stage} -ge 1 ]; then
     ### Task dependent. You have to design training and dev sets by yourself.
-    ## But you can utilize Kaldi recipes in most cases
+    ### But you can utilize Kaldi recipes in most cases
     echo "stage 1: Dump wav files into a HDF5 file"
-
-    echo "combine real and simulation data"
-    utils/combine_data.sh data/tr05_multi_noisy data/tr05_simu_noisy data/tr05_real_noisy
-    for setname in tr05_multi_noisy ${recog_set};do
+    # Generate the fbank features; by default 80-dimensional fbanks with pitch on each frame
+    tasks="${recog_set} tr_simu_8ch"
+    for setname in ${tasks}; do
         echo ${setname}
         mkdir -p data/${setname}_multich
-        <data/${setname}/utt2spk sed -r 's/^(.*?).CH[0-9](_.*?) /\1\2 /g' | sort -u >data/${setname}_multich/utt2spk
-        <data/${setname}/text sed -r 's/^(.*?).CH[0-9](_.*?) /\1\2 /g' | sort -u > data/${setname}_multich/text
+        <data/${setname}/utt2spk sed -r 's/^(.*?)_[A-H](_.*?) /\1\2 /g' | sort -u > data/${setname}_multich/utt2spk
+        <data/${setname}/text sed -r 's/^(.*?)_[A-H](_.*?) /\1\2 /g' | sort -u > data/${setname}_multich/text
         <data/${setname}_multich/utt2spk utils/utt2spk_to_spk2utt.pl >data/${setname}_multich/spk2utt
 
-        # 2th mic is omitted in default
-        for ch in 1 3 4 5 6; do
-            <data/${setname}/wav.scp grep "CH${ch}" | sed -r 's/^(.*?).CH[0-9](_.*?) /\1\2 /g' >data/${setname}_multich/wav_ch${ch}.scp
+        for ch in {A..H}; do
+            <data/${setname}/wav.scp grep "_${ch}_" | sed -r 's/^(.*?)_[A-H](_.*?) /\1\2 /g' >data/${setname}_multich/wav_ch${ch}.scp
         done
         gather-wav-scp.py data/${setname}_multich/wav_ch*.scp > data/${setname}_multich/wav.scp
-        rm -f data/${setname}_multich/wav_ch*.scp
+        #rm -f data/${setname}_multich/wav_ch*.scp
     done
 
     # Note that data/tr05_multi_noisy_multich has multi-channel wav data, while data/train_si284 has 1ch only
-    dump_pcm.sh --nj 32 --cmd ${train_cmd} --filetype "sound.hdf5" data/train_si284
-    for setname in tr05_multi_noisy ${recog_set}; do
-        dump_pcm.sh --nj 32 --cmd ${train_cmd} --filetype "sound.hdf5" data/${setname}_multich
+    dump_pcm.sh --nj 64 --cmd ${train_cmd} --filetype "sound.hdf5" data/train_si284
+    for setname in tr_simu_8ch ${recog_set}; do
+        dump_pcm.sh --nj 64 --cmd ${train_cmd} --filetype "sound.hdf5" data/${setname}_multich
     done
-    utils/combine_data.sh data/${train_dev}_multich data/dt05_simu_isolated_6ch_track_multich data/dt05_real_isolated_6ch_track_multich
-    utils/combine_data.sh data/${train_set} data/train_si284 data/tr05_multi_noisy
-
+    echo "combine real and simulation development data"
+    utils/combine_data.sh data/${train_dev}_multich data/dt_real_8ch_multich data/dt_simu_8ch_multich
+    echo "combine reverb simulation and wsj clean training data"
+    utils/combine_data.sh data/${train_set}_multich data/train_si284 data/tr_simu_8ch
 fi
 
 train_set="${train_set}_multich"
 train_dev="${train_dev}_multich"
 # Rename recog_set: e.g. dt05_real_isolated_6ch_track -> dt05_real_isolated_6ch_track_multich
 recog_set="$(for setname in ${recog_set}; do echo -n "${setname}_multich "; done)"
-
 
 dict=data/lang_1char/${train_set}_units.txt
 echo "dictionary: ${dict}"
@@ -175,10 +169,10 @@ fi
 expdir=exp/${expname}
 mkdir -p ${expdir}
 
-if [ ${stage} -le 2 ]; then
+if [ ${stage} -le 2 ] && [ ${stop_stage} -ge 2 ]; then
     ### Task dependent. You have to check non-linguistic symbols used in the corpus.
     echo "stage 2: Dictionary and Json Data Preparation"
-    utils/combine_data.sh data/${train_set} data/train_si284 data/tr05_multi_noisy
+    utils/combine_data.sh data/${train_set} data/train_si284 data/tr_simu_8ch
     mkdir -p data/lang_1char/
 
     echo "make a non-linguistic symbol list"
@@ -192,7 +186,7 @@ if [ ${stage} -le 2 ]; then
     wc -l ${dict}
 
     echo "make json files"
-    for setname in tr05_multi_noisy_multich ${train_dev} ${recog_set}; do
+    for setname in tr_simu_8ch_multich ${train_dev} ${recog_set}; do
         data2json.sh --cmd "${train_cmd}" --nj 30 \
         --category "multichannel" \
         --preprocess-conf ${preprocess_conf} --filetype sound.hdf5 \
@@ -208,7 +202,7 @@ if [ ${stage} -le 2 ]; then
     --out data/${setname}/data.json data/${setname} ${dict}
 
     mkdir -p data/${train_set}
-    concatjson.py data/tr05_multi_noisy_multich/data.json data/train_si284/data.json > data/${train_set}/data.json
+    concatjson.py data/tr_simu_8ch_multich/data.json data/train_si284/data.json > data/${train_set}/data.json
 fi
 
 # It takes a few days. If you just want to end-to-end ASR without LM,
@@ -223,7 +217,7 @@ lmexpname=train_rnnlm_${backend}_${lmtag}
 lmexpdir=exp/${lmexpname}
 mkdir -p ${lmexpdir}
 
-if [ ${stage} -le 3 ]; then
+if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
     echo "stage 3: LM Preparation"
     if [ ${use_wordlm} = true ]; then
         lmdatadir=data/local/wordlm_train
@@ -250,9 +244,8 @@ if [ ${stage} -le 3 ]; then
     fi
     # use only 1 gpu
     if [ ${ngpu} -gt 1 ]; then
-        echo "LM training does not support multi-gpu. single gpu will be used."
+	echo "LM training does not support multi-gpu. single gpu will be used."
     fi
-
     ${cuda_cmd} --gpu ${ngpu} ${lmexpdir}/train.log \
         lm_train.py \
         --ngpu ${ngpu} \
@@ -262,20 +255,19 @@ if [ ${stage} -le 3 ]; then
         --tensorboard-dir tensorboard/${lmexpname} \
         --train-label ${lmdatadir}/train.txt \
         --valid-label ${lmdatadir}/valid.txt \
-                --resume ${lm_resume} \
-                --layer ${lm_layers} \
-                --unit ${lm_units} \
-                --opt ${lm_opt} \
-                --sortagrad ${lm_sortagrad} \
-                --batchsize ${lm_batchsize} \
-                --epoch ${lm_epochs} \
-                --patience ${lm_patience} \
-                --maxlen ${lm_maxlen} \
+        --resume ${lm_resume} \
+        --layer ${lm_layers} \
+        --unit ${lm_units} \
+        --opt ${lm_opt} \
+        --sortagrad ${lm_sortagrad} \
+        --batchsize ${lm_batchsize} \
+        --epoch ${lm_epochs} \
+        --patience ${lm_patience} \
+        --maxlen ${lm_maxlen} \
         --dict ${lmdict}
 fi
 
-
-if [ ${stage} -le 4 ]; then
+if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
     echo "stage 4: Network Training: expdir=${expdir}"
 
     ${cuda_cmd} --gpu ${ngpu} ${expdir}/train.log \
@@ -321,7 +313,7 @@ if [ ${stage} -le 4 ]; then
         --patience ${patience}
 fi
 
-if [ ${stage} -le 5 ]; then
+if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
     echo "stage 5: Decoding"
     nj=32
 
@@ -335,7 +327,7 @@ if [ ${stage} -le 5 ]; then
         fi
 
         # split data
-        splitjson.py --parts ${nj} data/${rtask}/data.json
+        splitjson.py --parts ${nj} ${feat_recog_dir}/data.json 
 
         #### use CPU for decoding
         ngpu=0
@@ -345,7 +337,7 @@ if [ ${stage} -le 5 ]; then
             --ngpu ${ngpu} \
             --backend ${backend} \
             --debugmode ${debugmode} \
-            --recog-json data/${rtask}/split${nj}utt/data.JOB.json \
+            --recog-json ${feat_recog_dir}/split${nj}utt/data.JOB.json \
             --result-label ${expdir}/${decode_dir}/data.JOB.json \
             --model ${expdir}/results/${recog_model}  \
             --beam-size ${beam_size} \
@@ -362,6 +354,8 @@ if [ ${stage} -le 5 ]; then
     ) &
     done
     wait
+    echo "Report the result"
+    decode_part_dir=beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}_rnnlm${lm_weight}_${lmtag}
+    local/get_results.sh ${nlsyms} ${dict} ${expdir} ${decode_part_dir}
     echo "Finished"
 fi
-

@@ -16,6 +16,7 @@ import chainer
 import numpy as np
 import six
 import torch
+import pudb
 
 from chainer import reporter
 
@@ -193,6 +194,7 @@ class E2E(torch.nn.Module):
         :rtype: float
         """
         # 0. Frontend
+        #pudb.set_trace()
         if self.frontend is not None:
             hs_pad, hlens = self.frontend(_to_torch_tensor(xs_pad), ilens)
             hs_pad, hlens = self.feature_transform(hs_pad, hlens)

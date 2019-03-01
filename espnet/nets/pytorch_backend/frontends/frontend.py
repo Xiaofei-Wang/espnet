@@ -6,6 +6,7 @@ import numpy
 import torch
 import torch.nn as nn
 from torch_complex.tensor import ComplexTensor
+import pudb
 
 from espnet.nets.pytorch_backend.frontends.dnn_beamformer import DNN_Beamformer
 from espnet.nets.pytorch_backend.frontends.dnn_wpe import DNN_WPE
@@ -90,6 +91,10 @@ class Frontend(nn.Module):
                 choices = [(False, False)]
                 if self.use_wpe:
                     choices.append((True, False))
+
+                if self.use_wpe and self.use_beamformer:
+                    #pudb.set_trace()
+                    choices.append((True, True))
 
                 if self.use_beamformer:
                     choices.append((False, True))
