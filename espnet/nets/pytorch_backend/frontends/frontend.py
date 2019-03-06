@@ -6,7 +6,7 @@ import numpy
 import torch
 import torch.nn as nn
 from torch_complex.tensor import ComplexTensor
-import pudb
+#import pudb
 
 from espnet.nets.pytorch_backend.frontends.dnn_beamformer import DNN_Beamformer
 from espnet.nets.pytorch_backend.frontends.dnn_wpe import DNN_WPE
@@ -28,6 +28,7 @@ class Frontend(nn.Module):
 
                  # Beamformer options
                  use_beamformer: bool = False,
+                 use_beamformer_first: bool = False,
                  btype: str = 'blstmp',
                  blayers: int = 3,
                  bunits: int = 300,
@@ -38,6 +39,7 @@ class Frontend(nn.Module):
         super().__init__()
 
         self.use_beamformer = use_beamformer
+        self.use_beamformer_first = use_beamformer_first
         self.use_wpe = use_wpe
         self.use_dnn_mask_for_wpe = use_dnn_mask_for_wpe
 
@@ -89,7 +91,7 @@ class Frontend(nn.Module):
         if h.dim() == 4:
             if self.training:
                 choices = [(False, False)]
-                if self.use_wpe:
+                if self.use_wpe and not self.use_beamformer_first:
                     choices.append((True, False))
 
                 if self.use_wpe and self.use_beamformer:
@@ -106,13 +108,17 @@ class Frontend(nn.Module):
                 use_wpe = self.use_wpe
                 use_beamformer = self.use_beamformer
 
+            if self.use_beamformer_first and use_beamformer:
+                # h: (B, T, C, F) -> h: (B, T, F)
+                h, ilens = self.beamformer(h, ilens)
+
             # 1. WPE
             if use_wpe:
                 # h: (B, T, C, F) -> h: (B, T, C, F)
                 h, ilens = self.wpe(h, ilens)
 
             # 2. Beamformer
-            if use_beamformer:
+            if not self.use_beamformer_first and use_beamformer:
                 # h: (B, T, C, F) -> h: (B, T, F)
                 h, ilens = self.beamformer(h, ilens)
 
@@ -135,6 +141,7 @@ def frontend_for(args, idim):
 
         # Beamformer options
         use_beamformer=args.use_beamformer,
+        use_beamformer_first=args.use_beamformer_first,
         btype=args.btype,
         blayers=args.blayers,
         bunits=args.bunits,

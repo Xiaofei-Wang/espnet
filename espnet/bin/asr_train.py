@@ -291,6 +291,8 @@ def addtional_arguments_for_frontend(parser):
     # Beamformer options
     parser.add_argument('--use-beamformer', type=my_strtobool,
                         default=True, help='')
+    parser.add_argument('--use-beamformer_first', type=my_strtobool,
+                        default=True, help='')
     parser.add_argument('--btype', type=str, default='blstmp',
                         help='')
     parser.add_argument('--blayers', type=int, default=2,

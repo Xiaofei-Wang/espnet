@@ -9,7 +9,7 @@ from espnet.nets.pytorch_backend.encoders import BRNN
 from espnet.nets.pytorch_backend.encoders import BRNNP
 from espnet.nets.pytorch_backend.encoders import CNN
 from espnet.nets.pytorch_backend.nets_utils import make_pad_mask
-
+import pudb
 
 class MaskEstimator(torch.nn.Module):
     def __init__(self, type, idim, layers, units, projs, dropout, nmask=1):
@@ -18,7 +18,7 @@ class MaskEstimator(torch.nn.Module):
 
         if type == 'brnn':
             self.brnn = BRNN(idim, layers, units, projs, dropout)
-        elif type == 'blstmp':
+        elif type == 'blstmp' or type == 'blstmp_1d':
             self.brnn = BRNNP(idim, layers, units,
                               projs, subsample, dropout)
         elif type == 'cnn':
@@ -29,8 +29,13 @@ class MaskEstimator(torch.nn.Module):
                 .format(type))
         self.type = type
         self.nmask = nmask
-        self.linears = torch.nn.ModuleList(
-            [torch.nn.Linear(projs, idim) for _ in range(nmask)])
+        self.idim = idim
+        if nmask == 1 and type == 'blstmp_1d':
+            self.linears = torch.nn.ModuleList(
+                [torch.nn.Linear(projs, 1) for _ in range(nmask)])
+        else:
+            self.linears = torch.nn.ModuleList(
+                [torch.nn.Linear(projs, idim) for _ in range(nmask)])
 
     def forward(self, xs: ComplexTensor, ilens: torch.LongTensor) \
             -> Tuple[Tuple[torch.Tensor, ...], torch.LongTensor]:
@@ -70,7 +75,9 @@ class MaskEstimator(torch.nn.Module):
             mask.masked_fill(make_pad_mask(ilens, mask, length_dim=2), 0)
 
             mask = torch.sigmoid(mask)
-
+            if self.type == 'blstmp_1d':
+                pudb.set_trace()
+                mask = torch.expand(-1, -1, -1, self.idim)
             # (B, C, T, F) -> (B, F, C, T)
             mask = mask.permute(0, 3, 1, 2)
 

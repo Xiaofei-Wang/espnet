@@ -7,7 +7,7 @@ from torch_complex.tensor import ComplexTensor
 
 from espnet.nets.pytorch_backend.frontends.wpe import wpe_one_iteration
 from espnet.nets.pytorch_backend.nets_utils import make_pad_mask
-
+import pudb
 
 class DNN_WPE(torch.nn.Module):
     def __init__(self,
@@ -55,6 +55,10 @@ class DNN_WPE(torch.nn.Module):
             data: (B, C, T, F)
             ilens: (B,)
         """
+        if data.dim() == 3:
+            #pudb.set_trace()
+            data.unsqueeze_(2)
+
         # (B, T, C, F) -> (B, F, C, T)
         enhanced = data = data.permute(0, 3, 2, 1)
 

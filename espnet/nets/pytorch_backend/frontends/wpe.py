@@ -99,6 +99,13 @@ def get_correlations(Y: ComplexTensor, inverse_power: torch.Tensor,
     correlation_matrix = FC.einsum('fdtk,fetl->fkdle', (Psi_conj_norm, Psi))
     # (F, taps, C, taps, C) -> (F, taps * C, taps * C)
     correlation_matrix = correlation_matrix.view(F, taps * C, taps * C)
+    #reg_coeff = np.eye(taps*C)*1e-3
+    #reg_coeff=np.broadcast_to(reg_coeff[None,...], (F, taps * C, taps * C))
+    #reg_coeff_tensor = ComplexTensor(torch.as_tensor(reg_coeff),
+    #                                 torch.as_tensor(reg_coeff))
+    reg_coeff_tensor = ComplexTensor(torch.rand_like(correlation_matrix.real),
+                                     torch.rand_like(correlation_matrix.real))*1e-3
+    correlation_matrix += reg_coeff_tensor
 
     # (F, C, T, taps) x (F, C, T) -> (F, taps, C, C)
     correlation_vector = FC.einsum(
