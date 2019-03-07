@@ -30,7 +30,7 @@ class MaskEstimator(torch.nn.Module):
         self.type = type
         self.nmask = nmask
         self.idim = idim
-        if nmask == 1 and type == 'blstmp_1d':
+        if type == 'blstmp_1d':
             self.linears = torch.nn.ModuleList(
                 [torch.nn.Linear(projs, 1) for _ in range(nmask)])
         else:
@@ -76,8 +76,7 @@ class MaskEstimator(torch.nn.Module):
 
             mask = torch.sigmoid(mask)
             if self.type == 'blstmp_1d':
-                pudb.set_trace()
-                mask = torch.expand(-1, -1, -1, self.idim)
+                mask = mask.expand(-1, -1, -1, self.idim)
             # (B, C, T, F) -> (B, F, C, T)
             mask = mask.permute(0, 3, 1, 2)
 
