@@ -8,13 +8,13 @@
 
 # general configuration
 backend=pytorch
-stage=0        # start from 0 if you need to start from data preparation
+stage=4        # start from 0 if you need to start from data preparation
 ngpu=1         # number of gpus ("0" uses cpu, otherwise use gpu)
 debugmode=1
 N=0            # number of minibatches to be used (mainly for debugging). "0" uses all minibatches.
 verbose=0      # verbose option
 resume=        # Resume the training from snapshot
-stop_stage=4
+stop_stage=5
 
 # configuration path
 preprocess_conf=conf/preprocess.json
@@ -23,7 +23,7 @@ preprocess_conf=conf/preprocess.json
 use_beamformer=false
 use_beamformer_first=false
 use_wpe=true
-use_dnn_mask_for_wpe=true
+use_dnn_mask_for_wpe=false
 blayers=1
 wlayers=1
 btype=blstmp_1d
@@ -319,6 +319,7 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
         fi
 
         # split data
+	feat_recog_dir=data/$rtask
         splitjson.py --parts ${nj} ${feat_recog_dir}/data.json 
 
         #### use CPU for decoding
@@ -348,6 +349,7 @@ if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
     wait
     echo "Report the result"
     decode_part_dir=beam${beam_size}_e${recog_model}_p${penalty}_len${minlenratio}-${maxlenratio}_ctcw${ctc_weight}_rnnlm${lm_weight}_${lmtag}
-    local/get_results.sh ${nlsyms} ${dict} ${expdir} ${decode_part_dir}
+    local/score_for_reverb.sh --wer true --nlsyms ${nlsyms} "${expdir}/decode_*_1ch_${decode_part_dir}/data.json" ${dict} ${expdir}/decode_summary_1ch_${decode_part_dir}
+#    local/get_results.sh ${nlsyms} ${dict} ${expdir} ${decode_part_dir}
     echo "Finished"
 fi
