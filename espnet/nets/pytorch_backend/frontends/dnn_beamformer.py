@@ -65,24 +65,36 @@ class DNN_Beamformer(torch.nn.Module):
         data = data.permute(0, 3, 2, 1)
 
         (speech, noise), _ = self.mask(data, ilens)
+        
+        # if multi_channel
+        if data.size(-2) > 1:
+            psd_speech = get_power_spectral_density_matrix(data, speech)
+            psd_noise = get_power_spectral_density_matrix(data, noise)
 
-        psd_speech = get_power_spectral_density_matrix(data, speech)
-        psd_noise = get_power_spectral_density_matrix(data, noise)
+            # u: (B, C)
+            if self.ref_channel is None:
+                u, _ = self.ref(psd_speech, ilens)
+            else:
+                # (optional) Create onehot vector for fixed reference microphone
+                u = torch.zeros(*(data.size()[:-3] + (data.size(-2),)),
+                                device=data.device)
+                u[..., self.ref_channel].fill_(1)
 
-        # u: (B, C)
-        if self.ref_channel is None:
-            u, _ = self.ref(psd_speech, ilens)
+            ws = get_mvdr_vector(psd_speech, psd_noise, u)
+            enhanced = apply_beamforming_vector(ws, data)
+
+            # (..., F, T) -> (..., T, F)
+            enhanced = enhanced.transpose(-1, -2)
         else:
-            # (optional) Create onehot vector for fixed reference microphone
-            u = torch.zeros(*(data.size()[:-3] + (data.size(-2),)),
-                            device=data.device)
-            u[..., self.ref_channel].fill_(1)
-
-        ws = get_mvdr_vector(psd_speech, psd_noise, u)
-        enhanced = apply_beamforming_vector(ws, data)
-
-        # (..., F, T) -> (..., T, F)
-        enhanced = enhanced.transpose(-1, -2)
+#            real = speech.sqrt()
+#            imag = speech.sqrt()
+#            speech_mask = ComplexTensor(real, imag)
+            # (B, F, C, T) * (B, F, C, T)
+            enhanced = ComplexTensor(data.real * speech.sqrt(), data.imag * speech.sqrt())
+            # (B, F, T)
+            enhanced = enhanced.squeeze(2)
+            # (B, T, F)
+            enhanced = enhanced.transpose(-1, -2)
         return enhanced, ilens
 
 

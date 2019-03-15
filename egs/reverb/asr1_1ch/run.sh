@@ -22,7 +22,7 @@ preprocess_conf=conf/preprocess.json
 # network architecture
 use_beamformer=false
 use_beamformer_first=false
-use_wpe=true
+use_wpe=false
 use_dnn_mask_for_wpe=false
 blayers=1
 wlayers=1
@@ -268,7 +268,6 @@ if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
         --use-dnn-mask-for-wpe ${use_dnn_mask_for_wpe} \
         --blayers ${blayers} \
         --btype ${btype} \
-        --ref-channel 1 \
         --wlayers ${wlayers} \
         --ngpu ${ngpu} \
         --backend ${backend} \

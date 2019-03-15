@@ -86,8 +86,11 @@ class Frontend(nn.Module):
             raise ValueError(f'Input dim must be 3 or 4: {x.dim()}')
         if not torch.is_tensor(ilens):
             ilens = torch.from_numpy(numpy.asarray(ilens)).to(x.device)
-
-        h = x
+        
+        if x.dim() == 4:
+            h = x
+        else:
+            h = x.unsqueeze(2)
         if h.dim() == 4:
             if self.training:
                 choices = [(False, False)]
